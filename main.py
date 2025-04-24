@@ -5,6 +5,10 @@ from datetime import datetime
 
 app = FastAPI(title="Pybaseball MCP Server", description="MCP server exposing MLB/Fangraphs data via pybaseball.")
 
+@app.get("/")
+def read_root():
+    return {"status": "ok"}
+
 # MCP JSON-RPC tools registry
 def list_tools():
     return [
