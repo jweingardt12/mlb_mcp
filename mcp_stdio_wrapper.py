@@ -5,7 +5,23 @@ import requests
 FASTAPI_URL = "http://localhost:8000"
 
 def handle_rpc(method, params, rpc_id):
-    if method == "get_player_stats":
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "result": {
+                "capabilities": {},
+                "serverInfo": {
+                    "name": "Pybaseball MCP Server",
+                    "version": "1.0.0"
+                }
+            },
+            "id": rpc_id
+        }
+    elif method == "shutdown":
+        return {"jsonrpc": "2.0", "result": None, "id": rpc_id}
+    elif method == "exit":
+        sys.exit(0)
+    elif method == "get_player_stats":
         resp = requests.get(f"{FASTAPI_URL}/player", params=params)
     elif method == "get_team_stats":
         resp = requests.get(f"{FASTAPI_URL}/team_stats", params=params)
