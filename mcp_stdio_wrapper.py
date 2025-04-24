@@ -40,6 +40,12 @@ def handle_rpc(method, params, rpc_id):
         resp = requests.get(f"{FASTAPI_URL}/leaderboard", params=params)
     elif method == "tools/list":
         resp = requests.post(f"{FASTAPI_URL}/tools/list", json={})
+        data = resp.json()
+        # If the FastAPI endpoint returns a JSON-RPC response, extract the 'result' field
+        if "result" in data:
+            return {"jsonrpc": "2.0", "result": data["result"], "id": rpc_id}
+        else:
+            return {"jsonrpc": "2.0", "result": data, "id": rpc_id}
     else:
         return {
             "jsonrpc": "2.0",
