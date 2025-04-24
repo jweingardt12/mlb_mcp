@@ -4,6 +4,15 @@
 name: mlb_mcp
 version: 0.1.0
 description: MCP server for MLB and Fangraphs data using pybaseball and FastAPI
-startCommand: python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+startCommand:
+  cmd: python3
+  args:
+    - -m
+    - uvicorn
+    - main:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8000"
 port: 8000
 dockerfile: Dockerfile
