@@ -1,9 +1,17 @@
-# smithery.yaml
-# MCP server configuration for Smithery deployment
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
 
-name: mlb_mcp
-version: 0.1.0
-description: MCP server for MLB and Fangraphs data using pybaseball and FastAPI
-start: uvicorn main:app --host 0.0.0.0 --port 8080 --log-config uvicorn_log_config.json
-port: 8080
-dockerfile: Dockerfile
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    {}
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => ({
+      command: "sh",
+      args: [
+        "-c",
+        "uvicorn main:app --host 0.0.0.0 --port 8000 --log-config /app/uvicorn_log_config.json & python3 mcp_stdio_wrapper.py"
+      ]
+    })
