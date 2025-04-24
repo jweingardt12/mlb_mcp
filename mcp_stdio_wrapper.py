@@ -49,18 +49,22 @@ def handle_rpc(method, params, rpc_id):
 def main():
     for line in sys.stdin:
         try:
+            sys.stderr.write(f"IN: {line}\n")
             req = json.loads(line)
             method = req.get("method")
             params = req.get("params", {})
             rpc_id = req.get("id")
             result = handle_rpc(method, params, rpc_id)
+            sys.stderr.write(f"OUT: {json.dumps(result)}\n")
             print(json.dumps(result), flush=True)
         except Exception as e:
-            print(json.dumps({
+            error_obj = {
                 "jsonrpc": "2.0",
                 "error": {"code": -32700, "message": f"Parse error: {str(e)}"},
                 "id": None
-            }), flush=True)
+            }
+            sys.stderr.write(f"ERR: {json.dumps(error_obj)}\n")
+            print(json.dumps(error_obj), flush=True)
 
 if __name__ == "__main__":
     main()
