@@ -43,7 +43,7 @@ def call_tool(method, params):
 async def mcp_tools_list():
     return {
         "jsonrpc": "2.0",
-        "result": list_tools(),
+        "result": {"tools": list_tools()},
         "id": 1
     }
 
