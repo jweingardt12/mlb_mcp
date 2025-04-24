@@ -1,8 +1,22 @@
 import sys
 import json
 import requests
+import time
 
 FASTAPI_URL = "http://localhost:8000"
+
+# Wait for FastAPI to be ready
+for _ in range(20):  # Try for up to 10 seconds
+    try:
+        r = requests.get(f"{FASTAPI_URL}/docs", timeout=0.5)
+        if r.status_code == 200:
+            break
+    except Exception:
+        pass
+    time.sleep(0.5)
+else:
+    sys.stderr.write("ERROR: FastAPI server did not start in time.\n")
+    sys.exit(1)
 
 def handle_rpc(method, params, rpc_id):
     # Coerce id to int if possible, for Smithery compatibility
