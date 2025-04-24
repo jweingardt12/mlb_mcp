@@ -5,6 +5,12 @@ import requests
 FASTAPI_URL = "http://localhost:8000"
 
 def handle_rpc(method, params, rpc_id):
+    # Coerce id to int if possible, for Smithery compatibility
+    try:
+        if rpc_id is not None:
+            rpc_id = int(rpc_id)
+    except Exception:
+        pass
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
