@@ -1,17 +1,4 @@
 # Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
 
-startCommand:
-  type: stdio
-  configSchema:
-    # JSON Schema defining the configuration options for the MCP.
-    {}
-  commandFunction:
-    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
-    |-
-    (config) => ({
-      command: "sh",
-      args: [
-        "-c",
-        "uvicorn main:app --host 0.0.0.0 --port 8000 --log-config /app/uvicorn_log_config.json & python3 mcp_stdio_wrapper.py"
-      ]
-    })
+start: uvicorn main:app --host 0.0.0.0 --port 8000 --log-config /app/uvicorn_log_config.json
+port: 8000
