@@ -1,9 +1,66 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pybaseball import playerid_lookup, statcast_batter, team_batting, team_pitching, batting_stats, pitching_stats
 from typing import Optional
 from datetime import datetime
 
 app = FastAPI(title="Pybaseball MCP Server", description="MCP server exposing MLB/Fangraphs data via pybaseball.")
+
+# MCP JSON-RPC tools registry
+def list_tools():
+    return [
+        {
+            "name": "get_player_stats",
+            "description": "Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)",
+            "params": ["name", "start_date", "end_date"]
+        },
+        {
+            "name": "get_team_stats",
+            "description": "Get team stats for a given team and year. Type can be 'batting' or 'pitching'",
+            "params": ["team", "year", "type"]
+        },
+        {
+            "name": "get_leaderboard",
+            "description": "Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'",
+            "params": ["stat", "season", "type"]
+        }
+    ]
+
+def call_tool(method, params):
+    if method == "get_player_stats":
+        return get_player_stats(**params)
+    elif method == "get_team_stats":
+        return get_team_stats(**params)
+    elif method == "get_leaderboard":
+        return get_leaderboard(**params)
+    else:
+        raise Exception(f"Unknown method: {method}")
+
+@app.post("/tools/list")
+async def mcp_tools_list():
+    return {
+        "jsonrpc": "2.0",
+        "result": list_tools(),
+        "id": 1
+    }
+
+@app.post("/tools/call")
+async def mcp_tools_call(request: Request):
+    data = await request.json()
+    try:
+        method = data.get("method")
+        params = data.get("params", {})
+        result = call_tool(method, params)
+        return {
+            "jsonrpc": "2.0",
+            "result": result,
+            "id": data.get("id", 1)
+        }
+    except Exception as e:
+        return {
+            "jsonrpc": "2.0",
+            "error": {"code": -32601, "message": str(e)},
+            "id": data.get("id", 1)
+        }
 
 @app.get("/player")
 def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Optional[str] = None):
