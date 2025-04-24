@@ -1,5 +1,7 @@
 # Pybaseball MCP Server
 
+[![smithery badge](https://smithery.ai/badge/@jweingardt12/mlb_mcp)](https://smithery.ai/server/@jweingardt12/mlb_mcp)
+
 This is a FastAPI-based MCP server that exposes MLB and Fangraphs baseball data via the [pybaseball](https://pypi.org/project/pybaseball/) library.
 
 ## Features
