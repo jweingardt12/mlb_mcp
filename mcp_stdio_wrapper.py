@@ -9,7 +9,12 @@ def handle_rpc(method, params, rpc_id):
         return {
             "jsonrpc": "2.0",
             "result": {
-                "capabilities": {},
+                "capabilities": {
+                    "tools": {
+                        "call": True,
+                        "list": True
+                    }
+                },
                 "serverInfo": {
                     "name": "Pybaseball MCP Server",
                     "version": "1.0.0"
