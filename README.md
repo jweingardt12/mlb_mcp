@@ -25,7 +25,7 @@ uvicorn main:app --reload
   - `GET /leaderboard?stat=ERA&season=2023&league=NL&type=pitching`
 
 ## API Documentation
-Interactive API docs are available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+One up and running, interactive API docs are available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
 ## Publishing
 This project is ready for deployment on Smithery or any other MCP-compatible platform. It uses only pure Python dependencies for easy deployment.
