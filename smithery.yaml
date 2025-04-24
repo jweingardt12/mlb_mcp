@@ -12,7 +12,7 @@ startCommand:
       command: "sh",
       args: [
         "-c",
-        "uvicorn main:app --host 0.0.0.0 --port 8000 & python3 mcp_stdio_wrapper.py"
+        "uvicorn main:app --host 0.0.0.0 --port 8000 --log-config /app/uvicorn_log_config.yaml & python3 mcp_stdio_wrapper.py"
       ]
     })
 dockerfile: Dockerfile
