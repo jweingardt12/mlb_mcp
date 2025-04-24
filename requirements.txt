@@ -2,5 +2,3 @@ fastapi
 uvicorn
 pybaseball
 requests
-sys
-json
