@@ -10,11 +10,20 @@ import time
 # This prevents slow startup times that can cause timeouts
 pybaseball = None
 
-app = FastAPI(title="Pybaseball MCP Server", description="MCP server exposing MLB/Fangraphs data via pybaseball.")
+# Configure FastAPI with minimal startup operations
+app = FastAPI(
+    title="MLB Stats MCP",
+    description="MCP server exposing MLB/Fangraphs data via pybaseball.",
+    # Disable OpenAPI docs to speed up startup
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None
+)
 
+# Simple health check endpoint
 @app.get("/")
 def read_root():
-    return {"status": "ok"}
+    return {"status": "ok", "message": "MLB Stats MCP server is running"}
 
 # MCP JSON-RPC tools registry
 def list_tools():
@@ -79,31 +88,38 @@ def call_tool(method, params):
         print(f"Error calling {method}: {str(e)}")
         raise
 
+# Define the tools statically to avoid any computation during tool listing
+STATIC_TOOLS = [
+    {
+        "name": "get_player_stats",
+        "description": "Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)",
+        "params": ["name", "start_date", "end_date"]
+    },
+    {
+        "name": "get_team_stats",
+        "description": "Get team stats for a given team and year. Type can be 'batting' or 'pitching'",
+        "params": ["team", "year", "type"]
+    },
+    {
+        "name": "get_leaderboard",
+        "description": "Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'",
+        "params": ["stat", "season", "type"]
+    }
+]
+
+# Create a dedicated endpoint just for tool listing that responds instantly
+@app.get("/tools")
+async def tools_list_get():
+    """Lightweight endpoint for tool discovery that responds instantly"""
+    return {"tools": STATIC_TOOLS}
+
 @app.post("/tools/list")
 async def mcp_tools_list():
-    # Return a static tool list immediately without any processing
-    # This implements lazy loading by avoiding any expensive operations
+    """Standard MCP endpoint for tool listing"""
+    # Return the static tool list immediately without any computation
     return {
         "jsonrpc": "2.0",
-        "result": {
-            "tools": [
-                {
-                    "name": "get_player_stats",
-                    "description": "Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)",
-                    "params": ["name", "start_date", "end_date"]
-                },
-                {
-                    "name": "get_team_stats",
-                    "description": "Get team stats for a given team and year. Type can be 'batting' or 'pitching'",
-                    "params": ["team", "year", "type"]
-                },
-                {
-                    "name": "get_leaderboard",
-                    "description": "Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'",
-                    "params": ["stat", "season", "type"]
-                }
-            ]
-        },
+        "result": {"tools": STATIC_TOOLS},
         "id": 1
     }
 
