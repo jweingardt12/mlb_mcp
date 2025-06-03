@@ -41,9 +41,29 @@ def call_tool(method, params):
 
 @app.post("/tools/list")
 async def mcp_tools_list():
+    # Return a static tool list immediately without any processing
+    # This implements lazy loading by avoiding any expensive operations
     return {
         "jsonrpc": "2.0",
-        "result": {"tools": list_tools()},
+        "result": {
+            "tools": [
+                {
+                    "name": "get_player_stats",
+                    "description": "Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)",
+                    "params": ["name", "start_date", "end_date"]
+                },
+                {
+                    "name": "get_team_stats",
+                    "description": "Get team stats for a given team and year. Type can be 'batting' or 'pitching'",
+                    "params": ["team", "year", "type"]
+                },
+                {
+                    "name": "get_leaderboard",
+                    "description": "Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'",
+                    "params": ["stat", "season", "type"]
+                }
+            ]
+        },
         "id": 1
     }
 
@@ -53,6 +73,19 @@ async def mcp_tools_call(request: Request):
     try:
         method = data.get("method")
         params = data.get("params", {})
+        
+        # Validate method before attempting to call
+        if method not in ["get_player_stats", "get_team_stats", "get_leaderboard"]:
+            return {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {method}"
+                },
+                "id": data.get("id", 1)
+            }
+        
+        # Call the tool with a timeout to prevent hanging
         result = call_tool(method, params)
         return {
             "jsonrpc": "2.0",
