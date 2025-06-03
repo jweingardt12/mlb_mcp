@@ -2,11 +2,13 @@ import sys
 import json
 import requests
 import time
+import os
 
-FASTAPI_URL = "http://localhost:8000"
+FASTAPI_URL = os.getenv("FASTAPI_URL", "http://localhost:8000")
+retries = int(os.getenv("FASTAPI_STARTUP_RETRIES", "120"))
 
 # Wait for FastAPI to be ready
-for _ in range(20):  # Try for up to 10 seconds
+for _ in range(retries):
     try:
         r = requests.get(f"{FASTAPI_URL}/docs", timeout=0.5)
         if r.status_code == 200:

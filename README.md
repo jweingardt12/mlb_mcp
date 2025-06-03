@@ -36,6 +36,8 @@ uvicorn main:app --host 0.0.0.0 --port 8000 &
 python mcp_stdio_wrapper.py
 ```
 
+The wrapper waits for the FastAPI server to become ready. Adjust the startup wait period by setting the `FASTAPI_STARTUP_RETRIES` environment variable (default: 120 retries at 0.5 seconds each).
+
 This project is ready for deployment on Smithery or any other MCP-compatible platform. It uses the `pybaseball` library and its dependencies, including pandas and numpy.
 
 ---
