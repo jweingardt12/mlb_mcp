@@ -2,5 +2,4 @@ fastapi
 uvicorn
 pybaseball
 requests
-PyYAML
 pyyaml
