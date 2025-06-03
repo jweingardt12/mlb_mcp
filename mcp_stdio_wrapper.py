@@ -6,7 +6,10 @@ import time
 FASTAPI_URL = "http://localhost:8000"
 
 # Wait for FastAPI to be ready
-for _ in range(20):  # Try for up to 10 seconds
+# Allow the FastAPI server extra time to start up in case package imports are slow
+# Smithery will wait for the wrapper to respond on STDIO, so we loop up to 60
+# times (about 30 seconds) before giving up.
+for _ in range(60):  # Try for up to 30 seconds
     try:
         r = requests.get(f"{FASTAPI_URL}/docs", timeout=0.5)
         if r.status_code == 200:

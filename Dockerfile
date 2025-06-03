@@ -1,6 +1,16 @@
 # Dockerfile for Smithery-compatible MCP server
 FROM python:3.11-slim
 
+# Install build tools and libraries needed for packages like pandas and lxml
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc \
+        g++ \
+        libxml2-dev \
+        libxslt1-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt ./
