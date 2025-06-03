@@ -2,6 +2,7 @@
 
 
 This is a FastAPI-based MCP server that exposes MLB and Fangraphs baseball data via the [pybaseball](https://pypi.org/project/pybaseball/) library.
+The `pybaseball` package relies on common scientific Python libraries such as pandas and numpy.
 
 ## Features
 - `/player?name=...` — Get player Statcast data by name (optionally filter by date range)
@@ -29,7 +30,13 @@ uvicorn main:app --reload
 One up and running, interactive API docs are available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
 ## Publishing
-This project is ready for deployment on Smithery or any other MCP-compatible platform. It uses only pure Python dependencies for easy deployment.
+To expose an MCP STDIO interface instead of HTTP, first start the FastAPI server and then run the wrapper:
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 &
+python mcp_stdio_wrapper.py
+```
+
+This project is ready for deployment on Smithery or any other MCP-compatible platform. It uses the `pybaseball` library and its dependencies, including pandas and numpy.
 
 ---
 
