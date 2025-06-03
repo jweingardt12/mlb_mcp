@@ -38,6 +38,20 @@ python mcp_stdio_wrapper.py
 
 This project is ready for deployment on Smithery or any other MCP-compatible platform. It uses the `pybaseball` library and its dependencies, including pandas and numpy.
 
+## Listing available tools
+The server supports the MCP tool-discovery protocol. After starting the server, you can list available tools using either HTTP or the STDIO wrapper.
+
+**HTTP**
+```bash
+curl -X POST http://localhost:8000/tools/list
+```
+
+**STDIO**
+```bash
+echo '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}' | python mcp_stdio_wrapper.py
+```
+
+
 ---
 
 **Powered by [pybaseball](https://pypi.org/project/pybaseball/) and FastAPI**
