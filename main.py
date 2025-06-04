@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 import pandas as pd
 import requests
 import numpy as np
+import traceback
 
 # Lazy imports - don't import pybaseballstats until needed
 # This prevents slow startup times that can cause timeouts
@@ -502,18 +503,75 @@ def get_leaderboard(
     # Statcast metrics that should redirect to statcast_leaderboard
     STATCAST_METRICS = {"ev", "exitevelocity", "exit_velocity", "exitvelocity", "maxev", "max_exit_velocity", "launch_speed", "launchangle", "launch_angle", "hit_distance", "hitdistance", "distance"}
     stat_norm = stat.lower().replace("_", "")
-    if stat_norm in STATCAST_METRICS:
-        # Use date or start_date/end_date for statcast_leaderboard
-        if date:
-            start = end = date
-        elif start_date and end_date:
-            start, end = start_date, end_date
-        else:
-            # Default to season's first and last day if possible
-            start = f"{season}-03-01"
-            end = f"{season}-11-30"
-        # Call statcast_leaderboard and return its result
-        return statcast_leaderboard(start_date=start, end_date=end, limit=limit)
+    # Counting stats that can be aggregated from Statcast
+    COUNTING_STATS = {"hr", "home_run", "home runs", "home run", "homeruns", "homers"}
+    # If user requests a counting stat (like HR) for a specific month, day, or date range, use Statcast
+    if (stat_norm in COUNTING_STATS or stat_norm == "hr") and (month or day or date or (start_date and end_date)):
+        try:
+            # Determine date range
+            if date:
+                start = end = date
+            elif start_date and end_date:
+                start, end = start_date, end_date
+            else:
+                # If only month is specified, use the whole month
+                if month:
+                    start = f"{season}-{month:02d}-01"
+                    # Get last day of month
+                    if month == 12:
+                        end = f"{season}-12-31"
+                    else:
+                        end = (datetime(season, month+1, 1) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                else:
+                    # Fallback to season
+                    start = f"{season}-03-01"
+                    end = f"{season}-11-30"
+            # Query Statcast for the date range
+            pb = load_pybaseball()
+            df = pb.statcast(start_dt=start, end_dt=end)
+            if df.empty:
+                return {"content": []}
+            # Only keep batted balls
+            df = df[df["events"].notnull()]
+            # Filter for home runs
+            df_hr = df[df["events"].str.lower().str.contains("home_run")]
+            # Group by batter, count HRs
+            hr_counts = df_hr.groupby("batter").size().reset_index(name="HR")
+            # Get player names and teams
+            from pybaseball.playerid_lookup import playerid_reverse_lookup
+            def get_player_name(pid):
+                lookup = playerid_reverse_lookup([pid], key_type="mlbam")
+                if not lookup.empty:
+                    return f'{lookup.iloc[0]["name_first"]} {lookup.iloc[0]["name_last"]}'
+                return str(pid)
+            # Get team for each batter (use the most common team in the HRs for that period)
+            def get_team(pid):
+                # Infer team from inning_topbot, home_team, away_team
+                batter_rows = df_hr[df_hr["batter"] == pid]
+                teams = []
+                for _, row in batter_rows.iterrows():
+                    if "inning_topbot" in row and "home_team" in row and "away_team" in row:
+                        if row["inning_topbot"] == "Top":
+                            teams.append(row["away_team"])
+                        elif row["inning_topbot"] == "Bot":
+                            teams.append(row["home_team"])
+                if teams:
+                    # Return the most common team
+                    from collections import Counter
+                    return Counter(teams).most_common(1)[0][0]
+                return None
+            hr_counts["player_name"] = hr_counts["batter"].apply(get_player_name)
+            hr_counts["team"] = hr_counts["batter"].apply(get_team)
+            hr_counts = hr_counts.sort_values(by="HR", ascending=False).head(limit)
+            records = hr_counts[["player_name", "team", "HR"]].to_dict(orient="records")
+            if len(records) > 3:
+                return {"content": records}
+            else:
+                return {"content": records}
+        except Exception as e:
+            print(f"Error in HR aggregation: {e}")
+            traceback.print_exc()
+            return {"content": [], "error": str(e)}
 
     # Friendly mapping for common aliases
     FRIENDLY_STAT_MAP = {
@@ -719,7 +777,10 @@ def get_leaderboard(
                 result["video"] = row.get("video")
                 return result
             primary_records = [extract_primary_fields(row) for row in records[:limit]]
-            return {"content": sanitize_json(primary_records)}
+            if len(primary_records) > 3:
+                return {"content": primary_records}
+            else:
+                return {"content": primary_records}
         # Use pybaseball if loaded
         elif getattr(pb, "_source", None) == "pybaseball":
             if type.lower() == "batting":
@@ -809,7 +870,10 @@ def get_leaderboard(
                 result["video"] = row.get("video")
                 return result
             primary_records = [extract_primary_fields(row) for row in records[:limit]]
-            return {"content": sanitize_json(primary_records)}
+            if len(primary_records) > 3:
+                return {"content": primary_records}
+            else:
+                return {"content": primary_records}
         else:
             return {"content": [], "error": "Unknown baseball package loaded."}
     except Exception as e:
@@ -1267,7 +1331,10 @@ async def mlb_video_search(request: Request):
                     "text": text
                 }
                 videos.append({"type": "resource", "resource": video_obj})
-        return {"content": videos}
+        if len(videos) > 3:
+            return {"content": videos}
+        else:
+            return {"content": videos}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1406,7 +1473,10 @@ def statcast_leaderboard(
                 if mlb_video_url:
                     rec["mlb_video_url"] = mlb_video_url
             records.append(rec)
-        return {"content": sanitize_json(records)}
+        if len(records) > 3:
+            return {"content": records}
+        else:
+            return {"content": records}
     except Exception as e:
         print(f"Error in statcast_leaderboard: {e}")
         return {"content": [], "error": str(e)}
