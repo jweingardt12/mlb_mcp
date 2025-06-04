@@ -6,11 +6,8 @@ import asyncio
 import functools
 import time
 from fastapi.responses import JSONResponse
-import requests
-import json
-import numpy as np
 import pandas as pd
-from pybaseball.playerid_lookup import playerid_lookup, playerid_reverse_lookup
+import requests
 
 # Lazy imports - don't import pybaseballstats until needed
 # This prevents slow startup times that can cause timeouts
@@ -779,7 +776,6 @@ def get_leaderboard(
         return {"content": [], "error": str(e)}
 
 def find_video_for_row(row, default_date=None):
-    import requests
     player = row.get("Name")
     row_date = row.get("Date") or default_date
     result_val = row.get("Result") or row.get("HitResult")
@@ -1282,6 +1278,7 @@ def statcast_leaderboard(
         records = []
         batter_id_to_name = {}
         def get_player_name(player_id):
+            from pybaseball.playerid_lookup import playerid_reverse_lookup
             try:
                 player_id_int = int(player_id)
             except Exception:
