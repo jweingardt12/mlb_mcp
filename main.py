@@ -7,14 +7,14 @@ import asyncio
 import functools
 import time
 
-# Lazy imports - don't import pybaseball until needed
+# Lazy imports - don't import pybaseballstats until needed
 # This prevents slow startup times that can cause timeouts
 pybaseball = None
 
 # Configure FastAPI with minimal startup operations
 app = FastAPI(
     title="MLB Stats MCP",
-    description="MCP server exposing MLB/Fangraphs data via pybaseball.",
+    description="MCP server exposing MLB/Fangraphs data via pybaseballstats.",
     # Keep docs enabled but with minimal overhead
     docs_url="/docs",
     redoc_url=None
@@ -29,7 +29,10 @@ def read_root():
 def load_pybaseball():
     global pybaseball
     if pybaseball is None:
-        import pybaseball as pb
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            import pybaseballstats as pb
         pybaseball = pb
     return pybaseball
 
@@ -303,22 +306,25 @@ def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Opti
     Get player statcast data by name (optionally filter by date range: YYYY-MM-DD).
     """
     try:
-        # Lazy load pybaseball only when this function is called
+        # Lazy load pybaseballstats only when this function is called
         pb = load_pybaseball()
-        
-        player_id = pb.playerid_lookup(name.split()[1], name.split()[0])
-        if player_id.empty:
+
+        first, last = name.split()[0], " ".join(name.split()[1:])
+        player_df = pb.retrosheet.player_lookup(first_name=first, last_name=last, return_pandas=True)
+        if player_df.empty:
             raise ValueError(f"Player not found: {name}")
-        
-        player_id_mlbam = player_id.iloc[0]['key_mlbam']
-        
+
+        player_id_mlbam = int(player_df.iloc[0]['key_mlbam'])
+
         if start_date and end_date:
-            stats = pb.statcast_batter(start_date, end_date, player_id_mlbam)
+            stats = pb.statcast.statcast_date_range_pitch_by_pitch(start_date, end_date, return_pandas=True)
         else:
             # Default to last 30 days if no date range provided
             today = datetime.today().strftime('%Y-%m-%d')
             thirty_days_ago = (datetime.today() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
-            stats = pb.statcast_batter(thirty_days_ago, today, player_id_mlbam)
+            stats = pb.statcast.statcast_date_range_pitch_by_pitch(thirty_days_ago, today, return_pandas=True)
+
+        stats = stats[stats['batter'] == player_id_mlbam]
             
         if stats.empty:
             raise ValueError(f"No stats found for player: {name}")
@@ -347,26 +353,45 @@ def get_team_stats(team: str, year: int, type: str = "batting"):
         raise ValueError(error_msg)
 
     try:
-        # Lazy load pybaseball only when this function is called
+        # Lazy load pybaseballstats only when this function is called
         pb = load_pybaseball()
-        
+        from pybaseballstats.bref_teams import BREFTeams
+        from pybaseballstats.utils.fangraphs_consts import FangraphsTeams, FangraphsPitchingStatType
+        from pybaseballstats import fangraphs
+
+        def map_team(t: str):
+            key = t.replace(" ", "_").upper()
+            if key in BREFTeams.__members__:
+                return BREFTeams[key], FangraphsTeams[key]
+            for enum in BREFTeams:
+                if enum.value.upper() == key:
+                    fg = FangraphsTeams[enum.name]
+                    return enum, fg
+            raise ValueError(f"Invalid team: {t}")
+
+        bref_team, fg_team = map_team(team)
+
         if type.lower() == "batting":
-            stats = pb.team_batting(year)
+            stats = pb.bref_teams.team_standard_batting(bref_team, year, return_pandas=True)
         elif type.lower() == "pitching":
-            stats = pb.team_pitching(year)
+            stats = fangraphs.fangraphs_pitching_range(start_year=year, end_year=year,
+                                                       stat_types=[FangraphsPitchingStatType.DASHBOARD],
+                                                       team=fg_team, return_pandas=True)
         else:
             raise ValueError("Invalid type. Use 'batting' or 'pitching'.")
-            
-        filtered = stats[stats['Team'].str.contains(team, case=False, na=False)]
-        if filtered.empty:
+
+        if hasattr(stats, "to_pandas"):
+            stats = stats.to_pandas()
+
+        if stats.empty:
             raise ValueError(f"No stats found for team: {team} in {year}.")
-            
+
         return {
             "team": team,
             "year": year,
             "type": type,
-            "count": len(filtered),
-            "stats": filtered.to_dict(orient="records")
+            "count": len(stats),
+            "stats": stats.to_dict(orient="records")
         }
     except Exception as e:
         print(f"Error in get_team_stats: {str(e)}")
@@ -384,19 +409,40 @@ def get_leaderboard(stat: str, season: int, type: str = "batting"):
         raise ValueError(error_msg)
 
     try:
-        # Lazy load pybaseball only when this function is called
+        # Lazy load pybaseballstats only when this function is called
         pb = load_pybaseball()
-        
+        from pybaseballstats import fangraphs
+        from pybaseballstats.utils.fangraphs_consts import (
+            FangraphsBattingStatType,
+            FangraphsPitchingStatType,
+            FangraphsTeams,
+        )
+
         if type.lower() == "batting":
-            leaderboard = pb.batting_stats(season, season, qual=1, ind=0)
+            leaderboard = fangraphs.fangraphs_batting_range(
+                start_year=season,
+                end_year=season,
+                stat_types=[FangraphsBattingStatType.DASHBOARD],
+                team=FangraphsTeams.ALL,
+                return_pandas=True,
+            )
         elif type.lower() == "pitching":
-            leaderboard = pb.pitching_stats(season, season, qual=1, ind=0)
+            leaderboard = fangraphs.fangraphs_pitching_range(
+                start_year=season,
+                end_year=season,
+                stat_types=[FangraphsPitchingStatType.DASHBOARD],
+                team=FangraphsTeams.ALL,
+                return_pandas=True,
+            )
         else:
             raise ValueError("Type must be 'batting' or 'pitching'.")
             
+        if hasattr(leaderboard, "to_pandas"):
+            leaderboard = leaderboard.to_pandas()
+
         if leaderboard.empty:
             raise ValueError(f"No leaderboard data found for {stat} in {season}.")
-            
+
         # Filter for the requested stat column if present
         if stat not in leaderboard.columns:
             raise ValueError(f"Stat '{stat}' not found in leaderboard columns.")
