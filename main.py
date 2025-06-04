@@ -96,9 +96,9 @@ STATIC_TOOLS = [
             "properties": {
                 "team": {"type": "string", "description": "Team name or abbreviation"},
                 "year": {"type": "integer", "description": "Year/season to get stats for"},
-                "type": {"type": "string", "description": "Type of stats (batting or pitching)", "enum": ["batting", "pitching"]}
+                "type": {"type": "string", "description": "Type of stats (batting or pitching), defaults to 'batting' if not provided.", "enum": ["batting", "pitching"]}
             },
-            "required": ["team", "year", "type"]
+            "required": ["team", "year"]
         }
     },
     {
