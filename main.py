@@ -51,21 +51,27 @@ def with_timeout(timeout_seconds=10):
         return wrapper
     return decorator
 
-def call_tool(method, params):
+def call_tool(tool_name, params):
     # Load pybaseball only when a tool is actually called
+    pb = load_pybaseball() # Assuming load_pybaseball() is robust or its errors can propagate
+
     try:
-        if method == "get_player_stats":
+        if tool_name == "get_player_stats":
             return get_player_stats(**params)
-        elif method == "get_team_stats":
+        elif tool_name == "get_team_stats":
             return get_team_stats(**params)
-        elif method == "get_leaderboard":
+        elif tool_name == "get_leaderboard":
             return get_leaderboard(**params)
         else:
-            raise Exception(f"Unknown method: {method}")
+            # This case should ideally be caught by the checks in jsonrpc_endpoint
+            # before calling call_tool, but as a safeguard:
+            raise ValueError(f"Unknown tool: {tool_name}")
     except Exception as e:
-        # Catch and log any exceptions
-        print(f"Error calling {method}: {str(e)}")
-        raise
+        error_message = f"Error executing tool '{tool_name}' with params '{params}': {str(e)}"
+        print(error_message) # Log to server console (Smithery logs)
+        # Re-raise the exception so it can be caught by the jsonrpc_endpoint's main error handler
+        # and returned as a proper JSON-RPC error response to the client.
+        raise e
 
 # Define the tools statically to avoid any computation during tool listing
 STATIC_TOOLS = [
