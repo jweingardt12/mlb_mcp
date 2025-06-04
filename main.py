@@ -754,3 +754,28 @@ def bsp_statcast_pitcher_search(pitchers_lookup: str, season: str = None, month:
         return JSONResponse(content={"error": "'baseball-stats-python' package not installed."}, status_code=500)
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+# --- MLB-StatsAPI VIDEO ENDPOINTS ---
+
+@app.get("/mlb/highlights")
+def mlb_game_highlights(game_id: int):
+    try:
+        import statsapi
+        highlights = statsapi.game_highlights(game_id)
+        return JSONResponse(content={"highlights": highlights})
+    except ImportError:
+        return JSONResponse(content={"error": "'MLB-StatsAPI' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/mlb/play_video")
+def mlb_play_video(play_id: int):
+    try:
+        import statsapi
+        # This is a placeholder; use the actual function to get play video data if available
+        video_data = statsapi.get("video", {"playId": play_id})
+        return JSONResponse(content={"video": video_data})
+    except ImportError:
+        return JSONResponse(content={"error": "'MLB-StatsAPI' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
