@@ -112,6 +112,59 @@ async def tools_list_get():
     """Lightweight endpoint for tool discovery that responds instantly"""
     return {"tools": STATIC_TOOLS}
 
+@app.post("/jsonrpc")
+async def jsonrpc_endpoint(request: Request):
+    """Generic JSON-RPC endpoint for all MCP operations"""
+    try:
+        data = await request.json()
+        method = data.get("method")
+        params = data.get("params", {})
+        rpc_id = data.get("id", 1)
+        
+        print(f"Received JSON-RPC request: {method} with ID {rpc_id}")
+        
+        if method == "initialize":
+            return {
+                "jsonrpc": "2.0",
+                "result": {
+                    "capabilities": {
+                        "tools": {
+                            "call": True,
+                            "list": True
+                        }
+                    },
+                    "serverInfo": {
+                        "name": "MLB Stats MCP",
+                        "version": "1.0.0"
+                    }
+                },
+                "id": rpc_id
+            }
+        elif method == "shutdown":
+            return {"jsonrpc": "2.0", "result": None, "id": rpc_id}
+        elif method == "tools/list":
+            return {
+                "jsonrpc": "2.0",
+                "result": {"tools": STATIC_TOOLS},
+                "id": rpc_id
+            }
+        elif method in ["get_player_stats", "get_team_stats", "get_leaderboard"]:
+            result = call_tool(method, params)
+            return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
+        else:
+            return {
+                "jsonrpc": "2.0",
+                "error": {"code": -32601, "message": f"Method not found: {method}"},
+                "id": rpc_id
+            }
+    except Exception as e:
+        print(f"Error in JSON-RPC endpoint: {str(e)}")
+        return {
+            "jsonrpc": "2.0",
+            "error": {"code": -32000, "message": str(e)},
+            "id": data.get("id", 1) if "data" in locals() else 1
+        }
+
 @app.post("/tools/list")
 async def mcp_tools_list():
     """Standard MCP endpoint for tool listing"""
@@ -122,12 +175,47 @@ async def mcp_tools_list():
         "id": 1
     }
 
+@app.post("/initialize")
+async def mcp_initialize(request: Request):
+    """Handle MCP initialization requests directly"""
+    try:
+        data = await request.json()
+        return {
+            "jsonrpc": "2.0",
+            "result": {
+                "capabilities": {
+                    "tools": {
+                        "call": True,
+                        "list": True
+                    }
+                },
+                "serverInfo": {
+                    "name": "MLB Stats MCP",
+                    "version": "1.0.0"
+                }
+            },
+            "id": data.get("id", 1)
+        }
+    except Exception as e:
+        print(f"Error in initialize: {str(e)}")
+        return {
+            "jsonrpc": "2.0",
+            "error": {"code": -32000, "message": str(e)},
+            "id": 1
+        }
+
 @app.post("/tools/call")
 async def mcp_tools_call(request: Request):
     data = await request.json()
     try:
         method = data.get("method")
         params = data.get("params", {})
+        
+        # Handle MCP protocol methods directly
+        if method == "initialize":
+            return await mcp_initialize(request)
+        elif method == "shutdown":
+            return {"jsonrpc": "2.0", "result": None, "id": data.get("id", 1)}
         
         # Validate method before attempting to call
         if method not in ["get_player_stats", "get_team_stats", "get_leaderboard"]:
@@ -148,6 +236,7 @@ async def mcp_tools_call(request: Request):
             "id": data.get("id", 1)
         }
     except Exception as e:
+        print(f"Error in tools/call: {str(e)}")
         return {
             "jsonrpc": "2.0",
             "error": {"code": -32601, "message": str(e)},
