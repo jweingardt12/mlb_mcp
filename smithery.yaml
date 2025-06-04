@@ -3,7 +3,7 @@
 # Publishing Information
 name: mlb_mcp
 displayName: "MLB Baseball Stats API"
-description: "MCP server exposing MLB/Fangraphs data via pybaseball. Access player statistics, team data, and leaderboards."
+description: "MCP server exposing MLB/Fangraphs data via pybaseballstats. Access player statistics, team data, and leaderboards."
 author: jweingardt12
 tags: ["sports", "baseball", "mlb", "statistics"]
 
