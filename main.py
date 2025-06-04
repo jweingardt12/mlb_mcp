@@ -170,15 +170,19 @@ async def jsonrpc_endpoint(request: Request):
             if actual_tool_name and actual_tool_name.startswith("mlb-mcp-"):
                 actual_tool_name = actual_tool_name.replace("mlb-mcp-", "", 1)
 
-            # Try to get nested parameters first (standard)
-            actual_tool_params = params.get("parameters")
+            # Try to get nested parameters, prioritizing 'parameters', then 'arguments'
+            actual_tool_params = params.get("parameters")  # Standard MCP
             if actual_tool_params is None:
-                # If not nested, assume parameters are at the top level of the 'params' object,
-                # excluding 'name' itself.
+                actual_tool_params = params.get("arguments")  # Common alternative, as seen from client
+
+            if actual_tool_params is None:
+                # Fallback: if neither 'parameters' nor 'arguments' key exists,
+                # assume parameters are at the top level of the 'params' object, excluding 'name'.
                 actual_tool_params = {k: v for k, v in params.items() if k != "name"}
             
-            if actual_tool_params is None: # Should not happen with the logic above, but as a safeguard
-                actual_tool_params = {}
+            # Ensure actual_tool_params is a dict, defaulting to empty if all attempts fail
+            if not isinstance(actual_tool_params, dict):
+                 actual_tool_params = {}
 
             print(f"[TOOLS_CALL_HANDLER] Derived tool_name: '{actual_tool_name}', derived_params: {actual_tool_params}") # Log derived params
 
