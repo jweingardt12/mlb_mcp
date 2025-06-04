@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request, HTTPException
-import datetime
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import importlib
 import asyncio
 import functools
@@ -321,7 +320,7 @@ def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Opti
         else:
             # Default to last 30 days if no date range provided
             today = datetime.today().strftime('%Y-%m-%d')
-            thirty_days_ago = (datetime.today() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+            thirty_days_ago = (datetime.today() - timedelta(days=30)).strftime('%Y-%m-%d')
             stats = pb.statcast.statcast_date_range_pitch_by_pitch(thirty_days_ago, today, return_pandas=True)
 
         stats = stats[stats['batter'] == player_id_mlbam]
