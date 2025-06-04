@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi import FastAPI, Request, HTTPException, Query, Body
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import importlib
@@ -10,6 +10,7 @@ import requests
 import json
 import numpy as np
 import pandas as pd
+from pybaseball.playerid_lookup import playerid_lookup, playerid_reverse_lookup
 
 # Lazy imports - don't import pybaseballstats until needed
 # This prevents slow startup times that can cause timeouts
@@ -144,7 +145,12 @@ STATIC_TOOLS = [
                 "type": {"type": "string", "description": "Type of leaderboard (batting or pitching)", "enum": ["batting", "pitching"]},
                 "limit": {"type": "integer", "description": "Number of results to return", "default": 10},
                 "as_text": {"type": "boolean", "description": "Return a text summary of the leaderboard", "default": False},
-                "month": {"type": "integer", "description": "Month to filter leaderboard", "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], "default": None}
+                "month": {"type": "integer", "description": "Month to filter leaderboard", "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], "default": None},
+                "day": {"type": "integer", "description": "Day to filter leaderboard", "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31], "default": None},
+                "date": {"type": "string", "description": "Date to filter leaderboard", "format": "YYYY-MM-DD", "default": None},
+                "week": {"type": "integer", "description": "Week to filter leaderboard", "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53], "default": None},
+                "start_date": {"type": "string", "description": "Start date in YYYY-MM-DD format", "format": "YYYY-MM-DD", "default": None},
+                "end_date": {"type": "string", "description": "End date in YYYY-MM-DD format", "format": "YYYY-MM-DD", "default": None}
             },
             "required": ["stat", "season"]
         }
@@ -442,9 +448,28 @@ def get_team_stats(team: str, year: int, type: str = "batting"):
         raise HTTPException(status_code=404, detail=str(e))
 
 @app.get("/leaderboard")
-def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = Query(10, description="Number of results to return"), as_text: bool = False, month: int = None):
+def get_leaderboard(
+    stat: str,
+    season: int,
+    type: str = "batting",
+    limit: int = Query(10, description="Number of results to return"),
+    as_text: bool = False,
+    month: int = None,
+    day: int = None,
+    date: str = None,
+    week: int = None,
+    start_date: str = None,
+    end_date: str = None
+):
     """
-    Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'. Optionally filter by month (1-12).
+    Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'.
+    Optional filters:
+      - month (1-12)
+      - day (1-31)
+      - date (YYYY-MM-DD)
+      - week (1-53)
+      - start_date, end_date (YYYY-MM-DD)
+    If possible, includes a video resource for each leaderboard row.
     """
     current_year = datetime.now().year
     if season > current_year + 1: # Allow current year and next year only
@@ -512,6 +537,35 @@ def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = 
     def normalize_key(key):
         return key.lower().replace("_", "")
 
+    # Result code mapping (Fangraphs/pybaseball common codes)
+    RESULT_CODE_MAP = {
+        0: "Unknown",
+        1: "Out",
+        2: "Single",
+        3: "Double",
+        4: "Triple",
+        5: "Error",
+        6: "Fielder's Choice",
+        7: "Walk",
+        8: "Intentional Walk",
+        9: "Hit By Pitch",
+        10: "Interference",
+        11: "Sacrifice Hit",
+        12: "Sacrifice Fly",
+        13: "Catcher Interference",
+        14: "Field Error",
+        15: "Bunt",
+        16: "Groundout",
+        17: "Flyout",
+        18: "Lineout",
+        19: "Popout",
+        20: "Strikeout",
+        21: "Double Play",
+        22: "Triple Play",
+        23: "Home Run",
+        # Add more as needed
+    }
+
     try:
         pb = load_pybaseball()
         if pb is None:
@@ -576,7 +630,58 @@ def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = 
                 return {"content": [{"type": "text", "text": "\n".join(lines)}]}
             if month is not None and "Month" in leaderboard.columns:
                 leaderboard = leaderboard[leaderboard["Month"] == month]
-            return {"content": sanitize_json(records[:limit])}
+            if day is not None and "Day" in leaderboard.columns:
+                leaderboard = leaderboard[leaderboard["Day"] == day]
+            if week is not None and "Week" in leaderboard.columns:
+                leaderboard = leaderboard[leaderboard["Week"] == week]
+            if date is not None and "Date" in leaderboard.columns:
+                leaderboard = leaderboard[leaderboard["Date"] == date]
+            if start_date is not None and end_date is not None and "Date" in leaderboard.columns:
+                leaderboard = leaderboard[(leaderboard["Date"] >= start_date) & (leaderboard["Date"] <= end_date)]
+            # Attach video to each record if possible
+            for row in records:
+                row["video"] = find_video_for_row(row, date)
+            # Only keep primary fields for output
+            def extract_primary_fields(row):
+                result = {}
+                # Player name
+                result["player_name"] = row.get("Name")
+                # Pitcher (if available)
+                pitcher = row.get("Pitcher") or row.get("OpposingPitcher") or row.get("PitcherName")
+                if pitcher:
+                    result["pitcher"] = pitcher
+                # Exit velocity (EV or maxEV)
+                ev = row.get("EV") or row.get("maxEV")
+                if ev:
+                    result["exit_velocity"] = ev
+                # Hit distance (if available)
+                hit_distance = row.get("HitDistance") or row.get("Distance")
+                if hit_distance:
+                    result["hit_distance"] = hit_distance
+                # Result (HR, 2B, etc.)
+                result_col = row.get("Result") or row.get("HitResult") or row.get("HR")
+                # Map result code to string if possible
+                if isinstance(result_col, int) and result_col in RESULT_CODE_MAP:
+                    result["result"] = RESULT_CODE_MAP[result_col]
+                elif result_col:
+                    result["result"] = str(result_col)
+                # Opponent
+                opponent = row.get("Opponent") or row.get("OpposingTeam") or row.get("Opp")
+                if opponent:
+                    result["opponent"] = opponent
+                # Date
+                date_val = row.get("Date")
+                if date_val:
+                    result["date"] = date_val
+                # Add other relevant play-level fields if available
+                for key in ["Event", "PlayDesc", "PlayDescription", "Inning", "Team"]:
+                    if row.get(key) is not None:
+                        result[key.lower()] = row.get(key)
+                # Video
+                result["video"] = row.get("video")
+                return result
+            primary_records = [extract_primary_fields(row) for row in records[:limit]]
+            return {"content": sanitize_json(primary_records)}
         # Use pybaseball if loaded
         elif getattr(pb, "_source", None) == "pybaseball":
             if type.lower() == "batting":
@@ -615,12 +720,94 @@ def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = 
                 return {"content": [{"type": "text", "text": "\n".join(lines)}]}
             if month is not None and "Month" in df.columns:
                 df = df[df["Month"] == month]
-            return {"content": sanitize_json(records[:limit])}
+            if day is not None and "Day" in df.columns:
+                df = df[df["Day"] == day]
+            if week is not None and "Week" in df.columns:
+                df = df[df["Week"] == week]
+            if date is not None and "Date" in df.columns:
+                df = df[df["Date"] == date]
+            if start_date is not None and end_date is not None and "Date" in df.columns:
+                df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
+            # Attach video to each record if possible
+            for row in records:
+                row["video"] = find_video_for_row(row, date)
+            # Only keep primary fields for output
+            def extract_primary_fields(row):
+                result = {}
+                # Player name
+                result["player_name"] = row.get("Name")
+                # Pitcher (if available)
+                pitcher = row.get("Pitcher") or row.get("OpposingPitcher") or row.get("PitcherName")
+                if pitcher:
+                    result["pitcher"] = pitcher
+                # Exit velocity (EV or maxEV)
+                ev = row.get("EV") or row.get("maxEV")
+                if ev:
+                    result["exit_velocity"] = ev
+                # Hit distance (if available)
+                hit_distance = row.get("HitDistance") or row.get("Distance")
+                if hit_distance:
+                    result["hit_distance"] = hit_distance
+                # Result (HR, 2B, etc.)
+                result_col = row.get("Result") or row.get("HitResult") or row.get("HR")
+                # Map result code to string if possible
+                if isinstance(result_col, int) and result_col in RESULT_CODE_MAP:
+                    result["result"] = RESULT_CODE_MAP[result_col]
+                elif result_col:
+                    result["result"] = str(result_col)
+                # Opponent
+                opponent = row.get("Opponent") or row.get("OpposingTeam") or row.get("Opp")
+                if opponent:
+                    result["opponent"] = opponent
+                # Date
+                date_val = row.get("Date")
+                if date_val:
+                    result["date"] = date_val
+                # Add other relevant play-level fields if available
+                for key in ["Event", "PlayDesc", "PlayDescription", "Inning", "Team"]:
+                    if row.get(key) is not None:
+                        result[key.lower()] = row.get(key)
+                # Video
+                result["video"] = row.get("video")
+                return result
+            primary_records = [extract_primary_fields(row) for row in records[:limit]]
+            return {"content": sanitize_json(primary_records)}
         else:
             return {"content": [], "error": "Unknown baseball package loaded."}
     except Exception as e:
         print(f"Error in get_leaderboard: {str(e)}")
         return {"content": [], "error": str(e)}
+
+def find_video_for_row(row, default_date=None):
+    import requests
+    player = row.get("Name")
+    row_date = row.get("Date") or default_date
+    result_val = row.get("Result") or row.get("HitResult")
+    hit_distance = row.get("HitDistance") or row.get("Distance")
+    query_parts = []
+    if player:
+        query_parts.append(f'Player = ["{player}"]')
+    if row_date:
+        query_parts.append(f'Date = ["{row_date}"]')
+    if result_val:
+        query_parts.append(f'HitResult = ["{result_val}"]')
+    if hit_distance:
+        query_parts.append(f'HitDistance >= {hit_distance - 2} AND HitDistance <= {hit_distance + 2}')
+    query_parts.append('video')
+    video_query = ' AND '.join(query_parts)
+    try:
+        resp = requests.post(
+            "http://localhost:8000/mlb/video_search",
+            json={"query": video_query, "limit": 1}
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            content = data.get("content", [])
+            if content and isinstance(content, list):
+                return content[0]
+    except Exception as e:
+        print(f"Error finding video for {player} on {row_date}: {e}")
+    return None
 
 @app.get("/stats/options")
 def get_stat_options(
@@ -1061,3 +1248,150 @@ def sanitize_json(obj):
 
 # Example MLB video search query for hardest hit balls on 4-seam fastballs in 2023
 # GET /mlb/video_search?queries=PitchType = ["FF"] AND Season = ["2023"] Order By ExitVelocity DESC
+
+@app.get("/statcast/leaderboard")
+def statcast_leaderboard(
+    start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
+    end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
+    limit: int = Query(10, description="Number of results to return"),
+    min_ev: float = Query(None, description="Minimum exit velocity (optional)"),
+    result: str = Query(None, description="Filter by result type, e.g., 'home_run' (optional)")
+):
+    """
+    Get the top batted balls (per-play) for a given date range, sorted by exit velocity. Includes all play-level details and video if available.
+    """
+    pb = load_pybaseball()
+    if pb is None:
+        return {"content": [], "error": "Neither pybaseballstats nor pybaseball is installed."}
+    # Get Statcast data
+    try:
+        df = pb.statcast(start_dt=start_date, end_dt=end_date)
+        if df.empty:
+            return {"content": []}
+        # Filter for batted balls only (must have exit_velocity)
+        df = df[df["launch_speed"].notnull()]
+        if min_ev is not None:
+            df = df[df["launch_speed"] >= min_ev]
+        if result is not None:
+            # Try to match result in 'events' or 'description' columns
+            mask = df["events"].str.lower().str.contains(result.lower(), na=False) | df["description"].str.lower().str.contains(result.lower(), na=False)
+            df = df[mask]
+        # Sort by exit velocity
+        df = df.sort_values(by="launch_speed", ascending=False).reset_index(drop=True)
+        # Build output records
+        records = []
+        batter_id_to_name = {}
+        def get_player_name(player_id):
+            try:
+                player_id_int = int(player_id)
+            except Exception:
+                player_id_int = player_id
+            if player_id_int in batter_id_to_name:
+                return batter_id_to_name[player_id_int]
+            try:
+                lookup = playerid_reverse_lookup([player_id_int], key_type='mlbam')
+                if not lookup.empty:
+                    name = f"{lookup.iloc[0]['name_first']} {lookup.iloc[0]['name_last']}"
+                    batter_id_to_name[player_id_int] = name
+                    return name
+            except Exception as e:
+                print(f"Error reverse looking up player name for ID {player_id_int}: {e}")
+            batter_id_to_name[player_id_int] = str(player_id_int)
+            return str(player_id_int)
+        # Statcast pitch type code to name mapping
+        PITCH_TYPE_MAP = {
+            'FF': 'Four-Seam Fastball',
+            'FT': 'Two-Seam Fastball',
+            'SI': 'Sinker',
+            'FC': 'Cutter',
+            'FS': 'Splitter',
+            'FO': 'Forkball',
+            'SL': 'Slider',
+            'CH': 'Changeup',
+            'CU': 'Curveball',
+            'KC': 'Knuckle Curve',
+            'KN': 'Knuckleball',
+            'EP': 'Eephus',
+            'SC': 'Screwball',
+            'ST': 'Sweeper',
+            'SV': 'Slurve',
+            'CS': 'Slow Curve',
+            'UN': 'Unknown',
+            # Add more as needed
+        }
+        for _, row in df.head(limit).iterrows():
+            batter_id = row.get("batter")
+            pitcher_id = row.get("pitcher")
+            # Determine batter's team and opponent team
+            home_team = row.get("home_team")
+            away_team = row.get("away_team")
+            inning_topbot = row.get("inning_topbot")
+            if inning_topbot == "Top":
+                batter_team = away_team
+                opponent_team = home_team
+            else:
+                batter_team = home_team
+                opponent_team = away_team
+            rec = {
+                "batter_name": get_player_name(batter_id),
+                "pitcher_name": get_player_name(pitcher_id),
+                "batter_team": batter_team,
+                "opponent_team": opponent_team,
+                "date": row.get("game_date"),
+                "exit_velocity": row.get("launch_speed"),
+                "hit_distance": row.get("hit_distance_sc"),
+                "result": row.get("events") or row.get("description"),
+                "inning": row.get("inning"),
+                "pitch_type": row.get("pitch_type"),
+                "pitch_type_name": PITCH_TYPE_MAP.get(row.get("pitch_type"), row.get("pitch_type")),
+                "pitch_velocity": row.get("release_speed"),
+            }
+            # Construct MLB.com video search URL for home runs
+            mlb_video_url = None
+            if rec["result"] and "home_run" in str(rec["result"]).lower() and rec["batter_name"] and rec["date"]:
+                # Format: https://www.mlb.com/video/{batter_name}-home-run-on-{date}
+                # Fallback: MLB.com search URL
+                batter_slug = rec["batter_name"].replace(" ", "-").lower()
+                date_str = str(rec["date"]).split("T")[0]
+                search_query = f"{rec['batter_name']} home run {date_str}"
+                mlb_video_url = f"https://www.mlb.com/video/search?q={search_query.replace(' ', '%20')}"
+            # Try to find video for this play
+            video_query_parts = [
+                f'Player = ["{rec["batter_name"]}"]',
+                f'Date = ["{rec["date"]}"]',
+                'video'
+            ]
+            if rec["result"]:
+                video_query_parts.append(f'HitResult = ["{rec["result"]}"]')
+            if rec["hit_distance"]:
+                video_query_parts.append(f'HitDistance >= {rec["hit_distance"] - 2} AND HitDistance <= {rec["hit_distance"] + 2}')
+            video_query = ' AND '.join(video_query_parts)
+            try:
+                resp = requests.post(
+                    "http://localhost:8000/mlb/video_search",
+                    json={"query": video_query, "limit": 1}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data.get("content", [])
+                    if content and isinstance(content, list) and content[0].get("resource", {}).get("uri"):
+                        rec["video"] = content[0]
+                        rec["mlb_video_url"] = content[0]["resource"]["uri"]
+                    else:
+                        rec["video"] = None
+                        if mlb_video_url:
+                            rec["mlb_video_url"] = mlb_video_url
+                else:
+                    rec["video"] = None
+                    if mlb_video_url:
+                        rec["mlb_video_url"] = mlb_video_url
+            except Exception as e:
+                print(f"Error finding video for {rec['batter_name']} on {rec['date']}: {e}")
+                rec["video"] = None
+                if mlb_video_url:
+                    rec["mlb_video_url"] = mlb_video_url
+            records.append(rec)
+        return {"content": sanitize_json(records)}
+    except Exception as e:
+        print(f"Error in statcast_leaderboard: {e}")
+        return {"content": [], "error": str(e)}
