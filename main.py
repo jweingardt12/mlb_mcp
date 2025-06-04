@@ -943,7 +943,7 @@ async def mlb_video_search(request: Request):
                     "image_url": image_url,
                     "statcast": statcast
                 })
-        return {"videos": videos}
+        return {"content": videos}
     except Exception as e:
         return {"error": str(e)}
 
