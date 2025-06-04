@@ -138,6 +138,7 @@ async def jsonrpc_endpoint(request: Request):
             return {
                 "jsonrpc": "2.0",
                 "result": {
+                    "protocolVersion": "1.0.0",  # Added protocol version here
                     "capabilities": {
                         "tools": {
                             "call": True,
@@ -146,8 +147,7 @@ async def jsonrpc_endpoint(request: Request):
                     },
                     "serverInfo": {
                         "name": "MLB Stats MCP",
-                        "version": "1.0.0",
-                        "tools": STATIC_TOOLS
+                        "version": "1.0.0"
                     }
                 },
                 "id": rpc_id
