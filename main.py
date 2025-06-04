@@ -827,69 +827,101 @@ def mlb_play_video(play_id: int):
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
-@app.get("/mlb/video_search")
-def mlb_video_search(
-    queries: str = Query(..., description="MLB Film Room query string, e.g. 'HitResult = [\"Home Run\"] AND PitchType = [\"CU\"] Order By PitchSpeed ASC'")
-):
+@app.post("/mlb/video_search")
+async def mlb_video_search(request: Request):
     try:
+        data = await request.json()
+        query = data.get("query")
+        limit = data.get("limit", 10)
+        page = data.get("page", 0)
         url = "https://fastball-gateway.mlb.com/graphql"
         headers = {
             "accept": "*/*",
             "accept-language": "en-US,en;q=0.9",
             "cache-control": "no-cache",
+            "content-type": "application/json",
             "dnt": "1",
             "origin": "https://www.mlb.com",
             "pragma": "no-cache",
+            "priority": "u=1, i",
             "referer": "https://www.mlb.com/video/",
+            "sec-ch-ua": '"Chromium";v="137", "Not/A)Brand";v="24"',
+            "sec-ch-ua-mobile": "?1",
+            "sec-ch-ua-platform": '"Android"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "sec-gpc": "1",
             "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
         }
-        query = """
-        query getQueryInfo($queries: [String], $queryType: QueryType = STRUCTURED, $includeCount: Boolean = false) {
-          queryInfo(queries: $queries, queryType: $queryType) {
-            query
-            valid
-            graph
-            count @include(if: $includeCount)
-            __typename
-          }
+        body = {
+            "query": "query Search($query: String!, $page: Int, $limit: Int, $feedPreference: FeedPreference, $languagePreference: LanguagePreference, $contentPreference: ContentPreference, $forgeInstance: ForgeType = MLB, $queryType: QueryType = STRUCTURED) { search(query: $query, limit: $limit, page: $page, feedPreference: $feedPreference, languagePreference: $languagePreference, contentPreference: $contentPreference, forgeInstance: $forgeInstance, queryType: $queryType) { plays { mediaPlayback { id slug blurb date description title canAddToReel feeds { type duration image { altText templateUrl cuts { width src __typename } __typename } playbacks { name __typename } __typename } playInfo { balls strikes outs inning inningHalf pitchSpeed pitchType exitVelocity hitDistance launchAngle spinRate scoreDifferential gamePk runners { first second third __typename } teams { away { name shortName triCode __typename } home { name shortName triCode __typename } batting { name shortName triCode __typename } pitching { name shortName triCode __typename } __typename } players { pitcher { id name lastName playerHand __typename } batter { id name lastName playerHand __typename } __typename } __typename } keywordsDisplay { slug displayName __typename } __typename } __typename } total __typename } }",
+            "operationName": "Search",
+            "variables": {
+                "forgeInstance": "MLB",
+                "queryType": None,
+                "query": query,
+                "limit": limit,
+                "page": page,
+                "languagePreference": "EN",
+                "contentPreference": "MIXED"
+            }
         }
-        """
-        variables = {
-            "queryType": None,
-            "includeCount": False,
-            "queries": queries
-        }
-        params = {
-            "query": query,
-            "operationName": "getQueryInfo",
-            "variables": json.dumps(variables)
-        }
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        # Extract video URLs and titles from the response
+        response = requests.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        raw = response.json()
+        # Flatten the response
         videos = []
-        try:
-            query_info = data.get("data", {}).get("queryInfo", [])
-            for info in query_info:
-                # Traverse the 'graph' tree to find video nodes
-                def find_videos(node):
-                    results = []
-                    if not isinstance(node, dict):
-                        return results
-                    # MLB Film Room video nodes often have a 'url' or 'title' field
-                    if "url" in node and "title" in node:
-                        results.append({"title": node["title"], "url": node["url"]})
-                    # Recursively search children
-                    for child in node.get("children", []):
-                        results.extend(find_videos(child))
-                    return results
-                videos.extend(find_videos(info.get("graph", {})))
-        except Exception:
-            pass
-        return JSONResponse(content={"videos": videos})
+        plays = raw.get("data", {}).get("search", {}).get("plays", [])
+        for play in plays:
+            for mp in play.get("mediaPlayback", []):
+                # Get main feed (CMS preferred)
+                feeds = mp.get("feeds", [])
+                main_feed = next((f for f in feeds if f.get("type") == "CMS"), feeds[0] if feeds else None)
+                # Get video URLs (playbacks)
+                video_urls = []
+                if main_feed and "playbacks" in main_feed:
+                    video_urls = [pb.get("name") for pb in main_feed["playbacks"] if pb.get("name")]
+                # Get image URL (pick largest cut if available)
+                image_url = None
+                if main_feed and "image" in main_feed:
+                    cuts = main_feed["image"].get("cuts", [])
+                    if cuts:
+                        # Pick the largest width
+                        largest = max(cuts, key=lambda c: c.get("width", 0))
+                        image_url = largest.get("src")
+                    else:
+                        image_url = main_feed["image"].get("templateUrl")
+                # Statcast info
+                play_info = mp.get("playInfo", {})
+                statcast = {
+                    k: play_info.get(k)
+                    for k in ["exitVelocity", "hitDistance", "launchAngle", "pitchSpeed", "pitchType", "inning", "inningHalf", "balls", "strikes", "outs"]
+                    if k in play_info
+                }
+                # Player and team info
+                player_name = None
+                team = None
+                if "players" in play_info and "batter" in play_info["players"]:
+                    player_name = play_info["players"]["batter"].get("name")
+                if "teams" in play_info and "batting" in play_info["teams"]:
+                    team = play_info["teams"]["batting"].get("name")
+                videos.append({
+                    "id": mp.get("id"),
+                    "slug": mp.get("slug"),
+                    "title": mp.get("title"),
+                    "description": mp.get("description"),
+                    "date": mp.get("date"),
+                    "blurb": mp.get("blurb"),
+                    "player_name": player_name,
+                    "team": team,
+                    "video_urls": video_urls,
+                    "image_url": image_url,
+                    "statcast": statcast
+                })
+        return {"videos": videos}
     except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return {"error": str(e)}
 
 def safe_json(val):
     try:
@@ -911,3 +943,6 @@ def sanitize_json(obj):
         return [sanitize_json(v) for v in obj]
     else:
         return obj
+
+# Example MLB video search query for hardest hit balls on 4-seam fastballs in 2023
+# GET /mlb/video_search?queries=PitchType = ["FF"] AND Season = ["2023"] Order By ExitVelocity DESC
