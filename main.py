@@ -371,7 +371,7 @@ def get_leaderboard(stat: str, season: int, type: str = "batting"):
     """
     Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'.
     """
-    current_year = datetime.datetime.now().year
+    current_year = datetime.now().year
     if season > current_year + 1: # Allow current year and next year only
         error_msg = f"Invalid season: {season}. Year cannot be more than 1 year in the future."
         print(error_msg)
