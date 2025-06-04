@@ -114,14 +114,14 @@ STATIC_TOOLS = [
 @app.get("/tools")
 async def tools_list_get():
     """Lightweight endpoint for tool discovery that responds instantly"""
-    return {"tools": STATIC_TOOLS}
+    return {"protocolVersion": "1.0.0", "tools": STATIC_TOOLS}
 
 @app.get("/mcp")
 async def mcp_get_handler():
     """Handles GET requests to the /mcp endpoint, primarily for tool discovery."""
     # Smithery's technical requirements state /mcp must handle GET.
     # Returning the tools list here provides another discovery mechanism.
-    return {"tools": STATIC_TOOLS}
+    return {"protocolVersion": "1.0.0", "tools": STATIC_TOOLS}
 
 @app.post("/mcp")
 async def jsonrpc_endpoint(request: Request):
@@ -157,7 +157,7 @@ async def jsonrpc_endpoint(request: Request):
         elif method == "tools/list":
             return {
                 "jsonrpc": "2.0",
-                "result": {"tools": STATIC_TOOLS},
+                "result": {"protocolVersion": "1.0.0", "tools": STATIC_TOOLS},
                 "id": rpc_id
             }
         elif method in ["get_player_stats", "get_team_stats", "get_leaderboard"]:
