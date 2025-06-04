@@ -8,6 +8,7 @@ import time
 from fastapi.responses import JSONResponse
 import pandas as pd
 import requests
+import numpy as np
 
 # Lazy imports - don't import pybaseballstats until needed
 # This prevents slow startup times that can cause timeouts
@@ -776,33 +777,42 @@ def get_leaderboard(
         return {"content": [], "error": str(e)}
 
 def find_video_for_row(row, default_date=None):
+    import requests
     player = row.get("Name")
     row_date = row.get("Date") or default_date
     result_val = row.get("Result") or row.get("HitResult")
     hit_distance = row.get("HitDistance") or row.get("Distance")
-    query_parts = []
-    if player:
-        query_parts.append(f'Player = ["{player}"]')
-    if row_date:
-        query_parts.append(f'Date = ["{row_date}"]')
-    if result_val:
-        query_parts.append(f'HitResult = ["{result_val}"]')
-    if hit_distance:
-        query_parts.append(f'HitDistance >= {hit_distance - 2} AND HitDistance <= {hit_distance + 2}')
-    query_parts.append('video')
-    video_query = ' AND '.join(query_parts)
-    try:
-        resp = requests.post(
-            "http://localhost:8000/mlb/video_search",
-            json={"query": video_query, "limit": 1}
+    attempts = []
+
+    # Most strict: all fields, wide hit distance
+    if player and row_date and result_val and hit_distance:
+        attempts.append(
+            f'Player = ["{player}"] AND Date = ["{row_date}"] AND HitResult = ["{result_val}"] AND HitDistance >= {hit_distance - 10} AND HitDistance <= {hit_distance + 10} AND video'
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            content = data.get("content", [])
-            if content and isinstance(content, list):
-                return content[0]
-    except Exception as e:
-        print(f"Error finding video for {player} on {row_date}: {e}")
+    # Player + Date + video
+    if player and row_date:
+        attempts.append(
+            f'Player = ["{player}"] AND Date = ["{row_date}"] AND video'
+        )
+    # Player + video
+    if player:
+        attempts.append(
+            f'Player = ["{player}"] AND video'
+        )
+
+    for video_query in attempts:
+        try:
+            resp = requests.post(
+                "http://localhost:8000/mlb/video_search",
+                json={"query": video_query, "limit": 1}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("content", [])
+                if content and isinstance(content, list):
+                    return content[0]
+        except Exception as e:
+            print(f"Error finding video for {player} on {row_date}: {e}")
     return None
 
 @app.get("/stats/options")
