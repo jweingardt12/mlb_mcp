@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import importlib
@@ -407,6 +407,16 @@ def get_leaderboard(stat: str, season: int, type: str = "batting"):
         print(error_msg)
         raise ValueError(error_msg)
 
+    # Mapping of friendly stat names to actual DataFrame columns
+    STAT_COLUMN_MAP = {
+        "avg_exit_velocity": "EV",  # Example, check actual column name in logs
+        "exit_velocity_avg": "EV",
+        "HR": "HR",
+        "AVG": "AVG",
+        "ERA": "ERA",
+        # Add more mappings as needed
+    }
+
     try:
         # Lazy load pybaseballstats only when this function is called
         pb = load_pybaseball()
@@ -442,11 +452,15 @@ def get_leaderboard(stat: str, season: int, type: str = "batting"):
         if leaderboard.empty:
             raise ValueError(f"No leaderboard data found for {stat} in {season}.")
 
-        # Filter for the requested stat column if present
-        if stat not in leaderboard.columns:
-            raise ValueError(f"Stat '{stat}' not found in leaderboard columns.")
+        # Log available columns for debugging
+        print(f"Available columns: {leaderboard.columns.tolist()}")
+
+        # Map friendly stat name to actual column name
+        column_name = STAT_COLUMN_MAP.get(stat, stat)
+        if column_name not in leaderboard.columns:
+            raise ValueError(f"Stat '{stat}' (mapped to '{column_name}') not found in leaderboard columns. Available columns: {leaderboard.columns.tolist()}")
             
-        sorted_leaderboard = leaderboard.sort_values(by=stat, ascending=False).reset_index(drop=True)
+        sorted_leaderboard = leaderboard.sort_values(by=column_name, ascending=False).reset_index(drop=True)
         return {
             "stat": stat,
             "season": season,
@@ -457,3 +471,67 @@ def get_leaderboard(stat: str, season: int, type: str = "batting"):
     except Exception as e:
         print(f"Error in get_leaderboard: {str(e)}")
         raise HTTPException(status_code=404, detail=str(e))
+
+@app.get("/stats/options")
+def get_stat_options(
+    data_type: str = Query(..., description="Type of data: 'statcast', 'batting', 'pitching', 'team', 'division'"),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    season: Optional[int] = None,
+    player_name: Optional[str] = None,
+    team: Optional[str] = None
+):
+    """
+    Returns the available stat columns for a given data type and query.
+    """
+    pb = load_pybaseball()
+    df = None
+
+    if data_type == "statcast":
+        if not start_date or not end_date:
+            raise HTTPException(status_code=400, detail="start_date and end_date required for statcast")
+        df = pb.statcast(start_dt=start_date, end_dt=end_date, team=team)
+    elif data_type == "batting":
+        if not season:
+            raise HTTPException(status_code=400, detail="season required for batting")
+        df = pb.batting_stats(season)
+    elif data_type == "pitching":
+        if not season:
+            raise HTTPException(status_code=400, detail="season required for pitching")
+        df = pb.pitching_stats(season)
+    elif data_type == "team":
+        if not season:
+            raise HTTPException(status_code=400, detail="season required for team stats")
+        df = pb.team_batting(season)
+    elif data_type == "division":
+        if not season:
+            raise HTTPException(status_code=400, detail="season required for division stats")
+        df = pb.standings(season)
+    else:
+        raise HTTPException(status_code=400, detail="Unknown data_type")
+
+    return {"columns": list(df.columns)}
+
+@app.get("/statcast")
+def get_statcast(start_date: str = Query(...), end_date: str = Query(...), team: Optional[str] = None):
+    pb = load_pybaseball()
+    df = pb.statcast(start_dt=start_date, end_dt=end_date, team=team)
+    return df.to_dict(orient="records")
+
+@app.get("/batting_stats")
+def get_batting_stats(season: int = Query(...)):
+    pb = load_pybaseball()
+    df = pb.batting_stats(season)
+    return df.to_dict(orient="records")
+
+@app.get("/pitching_stats")
+def get_pitching_stats(season: int = Query(...)):
+    pb = load_pybaseball()
+    df = pb.pitching_stats(season)
+    return df.to_dict(orient="records")
+
+@app.get("/standings")
+def get_standings(season: int = Query(...)):
+    pb = load_pybaseball()
+    df = pb.standings(season)
+    return df.to_dict(orient="records")
