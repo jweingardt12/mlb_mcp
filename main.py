@@ -82,6 +82,8 @@ def call_tool(tool_name, params):
             return get_team_stats(**params)
         elif tool_name == "get_leaderboard":
             return get_leaderboard(**params)
+        elif tool_name == "statcast_leaderboard":
+            return statcast_leaderboard(**params)
         elif tool_name == "mlb_video_search":
             # Call the endpoint logic directly
             # params: query, limit, page
@@ -167,6 +169,22 @@ STATIC_TOOLS = [
                 "page": {"type": "integer", "description": "Page number for pagination", "default": 0}
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "statcast_leaderboard",
+        "description": "Get event-level Statcast leaderboard for a date range, filtered by result (e.g., home run) and sorted by exit velocity. Use this for event-level queries (e.g., hardest hit home runs in a month).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "Start date in YYYY-MM-DD format"},
+                "end_date": {"type": "string", "description": "End date in YYYY-MM-DD format"},
+                "limit": {"type": "integer", "description": "Number of results to return", "default": 10},
+                "min_ev": {"type": "number", "description": "Minimum exit velocity (optional)"},
+                "result": {"type": "string", "description": "Filter by result type, e.g., 'Home Run' (optional)"},
+                "order": {"type": "string", "description": "Sort order: 'asc' or 'desc' (optional, default desc)"}
+            },
+            "required": ["start_date", "end_date"]
         }
     }
 ]
