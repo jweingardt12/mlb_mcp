@@ -163,16 +163,32 @@ async def jsonrpc_endpoint(request: Request):
         elif method == "ping":
             return {"jsonrpc": "2.0", "result": {}, "id": rpc_id}  # Simple pong with empty object
         elif method == "tools/call":
+            print(f"[TOOLS_CALL_HANDLER] Received JRPC params: {params}") # Log incoming params
             # Handle gateway-style tool calls
-            actual_tool_name = params.get("name")
-            actual_tool_params = params.get("parameters", {})
+            raw_tool_name = params.get("name")
+            actual_tool_name = raw_tool_name
+            if actual_tool_name and actual_tool_name.startswith("mlb-mcp-"):
+                actual_tool_name = actual_tool_name.replace("mlb-mcp-", "", 1)
+
+            # Try to get nested parameters first (standard)
+            actual_tool_params = params.get("parameters")
+            if actual_tool_params is None:
+                # If not nested, assume parameters are at the top level of the 'params' object,
+                # excluding 'name' itself.
+                actual_tool_params = {k: v for k, v in params.items() if k != "name"}
+            
+            if actual_tool_params is None: # Should not happen with the logic above, but as a safeguard
+                actual_tool_params = {}
+
+            print(f"[TOOLS_CALL_HANDLER] Derived tool_name: '{actual_tool_name}', derived_params: {actual_tool_params}") # Log derived params
+
             if actual_tool_name in ["get_player_stats", "get_team_stats", "get_leaderboard"]:
                 result = call_tool(actual_tool_name, actual_tool_params)
                 return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
             else:
                 return {
                     "jsonrpc": "2.0",
-                    "error": {"code": -32601, "message": f"Tool not found within tools/call: {actual_tool_name}"},
+                    "error": {"code": -32601, "message": f"Tool '{raw_tool_name}' (parsed as '{actual_tool_name}') not found or supported."},
                     "id": rpc_id
                 }
         elif method == "tools/list":
