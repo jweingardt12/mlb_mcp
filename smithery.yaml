@@ -65,6 +65,13 @@ tools:
         - "stat"
         - "season"
 
-# For deployments that expect MCP STDIO, start uvicorn and then run the wrapper:
-start: bash -c "uvicorn main:app --host 0.0.0.0 --port 8000 & python mcp_stdio_wrapper.py"
-port: 8000
+runtime: container
+# The command to start the server (e.g., Uvicorn) should now be in your Dockerfile's CMD or ENTRYPOINT.
+# Smithery will expect the server to listen on the $PORT environment variable.
+# Example startCommand structure for HTTP, if further configuration schema is needed later:
+# startCommand:
+#   type: "http"
+#   configSchema: 
+#     type: "object"
+#     properties: {}
+#   exampleConfig: {}
