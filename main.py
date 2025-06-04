@@ -5,6 +5,7 @@ import importlib
 import asyncio
 import functools
 import time
+from fastapi.responses import JSONResponse
 
 # Lazy imports - don't import pybaseballstats until needed
 # This prevents slow startup times that can cause timeouts
@@ -535,3 +536,221 @@ def get_standings(season: int = Query(...)):
     pb = load_pybaseball()
     df = pb.standings(season)
     return df.to_dict(orient="records")
+
+# --- BASEBALL LIBRARY ENDPOINTS ---
+
+@app.get("/baseball/day")
+def baseball_day(year: int, month: int, day: int, home: str = None, away: str = None):
+    try:
+        import baseball
+        result = baseball.day(year, month, day, home=home, away=away)
+        return JSONResponse(content={"games": [g.__dict__ for g in result]})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/games")
+def baseball_games(years: int, months: str = None, days: str = None, home: str = None, away: str = None):
+    try:
+        import baseball
+        months_list = [int(m) for m in months.split(",")] if months else None
+        days_list = [int(d) for d in days.split(",")] if days else None
+        result = baseball.games(years, months=months_list, days=days_list, home=home, away=away)
+        # Flatten and serialize
+        games = [g.__dict__ for day in result for g in day]
+        return JSONResponse(content={"games": games})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/box_score")
+def baseball_box_score(game_id: str):
+    try:
+        import baseball
+        result = baseball.box_score(game_id)
+        return JSONResponse(content={"box_score": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/overview")
+def baseball_overview(game_id: str):
+    try:
+        import baseball
+        result = baseball.overview(game_id)
+        return JSONResponse(content={"overview": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/players")
+def baseball_players(game_id: str):
+    try:
+        import baseball
+        result = baseball.players(game_id)
+        return JSONResponse(content={"players": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/player_stats")
+def baseball_player_stats(game_id: str):
+    try:
+        import baseball
+        result = baseball.player_stats(game_id)
+        return JSONResponse(content={"player_stats": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/team_stats")
+def baseball_team_stats(game_id: str):
+    try:
+        import baseball
+        result = baseball.team_stats(game_id)
+        return JSONResponse(content={"team_stats": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/game_events")
+def baseball_game_events(game_id: str):
+    try:
+        import baseball
+        result = baseball.game_events(game_id)
+        return JSONResponse(content={"game_events": [e.__dict__ for e in result]})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/important_dates")
+def baseball_important_dates(year: int = None):
+    try:
+        import baseball
+        result = baseball.important_dates(year)
+        return JSONResponse(content={"important_dates": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/league")
+def baseball_league():
+    try:
+        import baseball
+        result = baseball.league()
+        return JSONResponse(content={"league": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/teams")
+def baseball_teams():
+    try:
+        import baseball
+        result = baseball.teams()
+        return JSONResponse(content={"teams": [t.__dict__ for t in result]})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/roster")
+def baseball_roster(team_id: str):
+    try:
+        import baseball
+        result = baseball.roster(team_id)
+        return JSONResponse(content={"roster": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/standings")
+def baseball_standings():
+    try:
+        import baseball
+        from datetime import datetime
+        result = baseball.standings(datetime.now())
+        return JSONResponse(content={"standings": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/baseball/injury")
+def baseball_injury():
+    try:
+        import baseball
+        result = baseball.injury()
+        return JSONResponse(content={"injury": result.__dict__})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+# --- BASEBALL-STATS-PYTHON ENDPOINTS ---
+
+@app.get("/bsp/statcast_search")
+def bsp_statcast_search(season: str, team: str = None, player_type: str = None, month: str = None):
+    try:
+        from baseball_stats_python import statcast_search
+        result = statcast_search(season=season, team=team, player_type=player_type, month=month)
+        return JSONResponse(content={"statcast_search": result.to_dict(orient="records")})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball-stats-python' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/bsp/minor_statcast_search")
+def bsp_minor_statcast_search(season: str, level: str = None, month: str = None):
+    try:
+        from baseball_stats_python import minor_statcast_search
+        result = minor_statcast_search(season=season, level=level, month=month)
+        return JSONResponse(content={"minor_statcast_search": result.to_dict(orient="records")})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball-stats-python' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/bsp/mlbam_id_search")
+def bsp_mlbam_id_search(name: str):
+    try:
+        from baseball_stats_python import mlbam_id_search
+        result = mlbam_id_search(name)
+        return JSONResponse(content={"mlbam_id_search": result.to_dict(orient="records")})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball-stats-python' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/bsp/statcast_batter_search")
+def bsp_statcast_batter_search(batters_lookup: str, season: str = None, month: str = None):
+    try:
+        from baseball_stats_python import statcast_batter_search
+        result = statcast_batter_search(batters_lookup=batters_lookup, season=season, month=month)
+        return JSONResponse(content={"statcast_batter_search": result.to_dict(orient="records")})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball-stats-python' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/bsp/statcast_pitcher_search")
+def bsp_statcast_pitcher_search(pitchers_lookup: str, season: str = None, month: str = None):
+    try:
+        from baseball_stats_python import statcast_pitcher_search
+        result = statcast_pitcher_search(pitchers_lookup=pitchers_lookup, season=season, month=month)
+        return JSONResponse(content={"statcast_pitcher_search": result.to_dict(orient="records")})
+    except ImportError:
+        return JSONResponse(content={"error": "'baseball-stats-python' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
