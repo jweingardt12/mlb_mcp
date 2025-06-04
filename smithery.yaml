@@ -66,5 +66,5 @@ tools:
         - "season"
 
 # For deployments that expect MCP STDIO, start uvicorn and then run the wrapper:
-start: bash -c "uvicorn main:app --host 0.0.0.0 --port 8000 --log-config /app/uvicorn_log_config.json & python mcp_stdio_wrapper.py"
+start: bash -c "uvicorn main:app --host 0.0.0.0 --port 8000 & python mcp_stdio_wrapper.py"
 port: 8000
