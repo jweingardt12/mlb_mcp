@@ -447,6 +447,24 @@ def get_team_stats(team: str, year: int, type: str = "batting"):
         print(f"Error in get_team_stats: {str(e)}")
         raise HTTPException(status_code=404, detail=str(e))
 
+# Add a mapping for natural language stat queries
+NATURAL_LANGUAGE_STAT_MAP = {
+    # Exit velocity
+    "hardest hit balls": "EV",
+    "hardest hit ball": "EV",
+    "hardest hit": "EV",
+    "highest exit velocity": "EV",
+    "top exit velocity": "EV",
+    "top exit velo": "EV",
+    "exit velo": "EV",
+    "exit velocity": "EV",
+    "max exit velocity": "maxEV",
+    "maximum exit velocity": "maxEV",
+    "maxev": "maxEV",
+    "hardest hit home run": "EV",
+    # Add more as needed
+}
+
 @app.get("/leaderboard")
 def get_leaderboard(
     stat: str,
@@ -477,6 +495,10 @@ def get_leaderboard(
         print(error_msg)
         return {"content": [], "error": error_msg}
 
+    # Normalize stat using natural language mapping first
+    stat_lower = stat.lower().strip()
+    if stat_lower in NATURAL_LANGUAGE_STAT_MAP:
+        stat = NATURAL_LANGUAGE_STAT_MAP[stat_lower]
     # Statcast metrics that should redirect to statcast_leaderboard
     STATCAST_METRICS = {"ev", "exitevelocity", "exit_velocity", "exitvelocity", "maxev", "max_exit_velocity", "launch_speed", "launchangle", "launch_angle", "hit_distance", "hitdistance", "distance"}
     stat_norm = stat.lower().replace("_", "")
