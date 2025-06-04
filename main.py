@@ -24,26 +24,6 @@ app = FastAPI(
 def read_root():
     return {"status": "ok", "message": "MLB Stats MCP server is running"}
 
-# MCP JSON-RPC tools registry
-def list_tools():
-    return [
-        {
-            "name": "get_player_stats",
-            "description": "Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)",
-            "params": ["name", "start_date", "end_date"]
-        },
-        {
-            "name": "get_team_stats",
-            "description": "Get team stats for a given team and year. Type can be 'batting' or 'pitching'",
-            "params": ["team", "year", "type"]
-        },
-        {
-            "name": "get_leaderboard",
-            "description": "Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'",
-            "params": ["stat", "season", "type"]
-        }
-    ]
-
 # Lazy loading helper function
 def load_pybaseball():
     global pybaseball
@@ -92,17 +72,41 @@ STATIC_TOOLS = [
     {
         "name": "get_player_stats",
         "description": "Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)",
-        "params": ["name", "start_date", "end_date"]
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Player name to search for"},
+                "start_date": {"type": "string", "description": "Start date in YYYY-MM-DD format"},
+                "end_date": {"type": "string", "description": "End date in YYYY-MM-DD format"}
+            },
+            "required": ["name"]
+        }
     },
     {
         "name": "get_team_stats",
         "description": "Get team stats for a given team and year. Type can be 'batting' or 'pitching'",
-        "params": ["team", "year", "type"]
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "team": {"type": "string", "description": "Team name or abbreviation"},
+                "year": {"type": "integer", "description": "Year/season to get stats for"},
+                "type": {"type": "string", "description": "Type of stats (batting or pitching)", "enum": ["batting", "pitching"]}
+            },
+            "required": ["team", "year", "type"]
+        }
     },
     {
         "name": "get_leaderboard",
         "description": "Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'",
-        "params": ["stat", "season", "type"]
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "stat": {"type": "string", "description": "Statistic to get leaderboard for (e.g., 'HR', 'AVG', 'ERA')"},
+                "season": {"type": "integer", "description": "Season year to get leaderboard for"},
+                "type": {"type": "string", "description": "Type of leaderboard (batting or pitching)", "enum": ["batting", "pitching"]}
+            },
+            "required": ["stat", "season"]
+        }
     }
 ]
 
@@ -135,7 +139,8 @@ async def jsonrpc_endpoint(request: Request):
                     },
                     "serverInfo": {
                         "name": "MLB Stats MCP",
-                        "version": "1.0.0"
+                        "version": "1.0.0",
+                        "tools": STATIC_TOOLS
                     }
                 },
                 "id": rpc_id
