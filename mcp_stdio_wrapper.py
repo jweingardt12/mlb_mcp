@@ -53,7 +53,7 @@ def handle_rpc(method, params, rpc_id):
             try:
                 sys.stderr.write(f"INFO: [{rpc_id}] Attempting GET {FASTAPI_URL}/tools\n")
                 t_get_start = time.time()
-                resp = requests.get(f"{FASTAPI_URL}/tools", timeout=3.0)
+                resp = requests.get(f"{FASTAPI_URL}/tools", timeout=10.0) # Increased timeout
                 t_get_end = time.time()
                 sys.stderr.write(f"INFO: [{rpc_id}] GET /tools completed in {t_get_end - t_get_start:.4f}s, status: {resp.status_code}\n")
                 resp.raise_for_status() # Raise an exception for bad status codes
@@ -65,9 +65,11 @@ def handle_rpc(method, params, rpc_id):
                 # Fall through to the JSON-RPC POST endpoint if response_data is still None
         
         if response_data is None: # If not tools/list or if GET /tools failed
-            sys.stderr.write(f"INFO: [{rpc_id}] Sending to JSON-RPC endpoint (/mcp): {json.dumps(jsonrpc_request)}\n")
+            sys.stderr.write(f"INFO: [{rpc_id}] Sending to JSON-RPC endpoint (/mcp) for method '{method}': {json.dumps(jsonrpc_request)}\n")
             t_post_start = time.time()
-            resp = requests.post(f"{FASTAPI_URL}/mcp", json=jsonrpc_request, timeout=5.0)
+            # Use a longer timeout for tools/list specifically if it falls back to POST
+            post_timeout = 12.0 if method == "tools/list" else 5.0
+            resp = requests.post(f"{FASTAPI_URL}/mcp", json=jsonrpc_request, timeout=post_timeout)
             t_post_end = time.time()
             sys.stderr.write(f"INFO: [{rpc_id}] POST /jsonrpc for method '{method}' completed in {t_post_end - t_post_start:.4f}s, status: {resp.status_code}\n")
             
