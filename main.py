@@ -8,6 +8,8 @@ import time
 from fastapi.responses import JSONResponse
 import requests
 import json
+import numpy as np
+import pandas as pd
 
 # Lazy imports - don't import pybaseballstats until needed
 # This prevents slow startup times that can cause timeouts
@@ -30,12 +32,25 @@ def read_root():
 # Lazy loading helper function
 def load_pybaseball():
     global pybaseball
-    if pybaseball is None:
+    if pybaseball is not None:
+        return pybaseball
+    try:
         import contextlib
         import io
         with contextlib.redirect_stdout(io.StringIO()):
             import pybaseballstats as pb
         pybaseball = pb
+        pybaseball._source = "pybaseballstats"
+    except ImportError:
+        try:
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                import pybaseball as pb
+            pybaseball = pb
+            pybaseball._source = "pybaseball"
+        except ImportError:
+            pybaseball = None
     return pybaseball
 
 # Timeout decorator for functions
@@ -115,7 +130,8 @@ STATIC_TOOLS = [
             "properties": {
                 "stat": {"type": "string", "description": "Statistic to get leaderboard for (e.g., 'HR', 'AVG', 'ERA')"},
                 "season": {"type": "integer", "description": "Season year to get leaderboard for"},
-                "type": {"type": "string", "description": "Type of leaderboard (batting or pitching)", "enum": ["batting", "pitching"]}
+                "type": {"type": "string", "description": "Type of leaderboard (batting or pitching)", "enum": ["batting", "pitching"]},
+                "limit": {"type": "integer", "description": "Number of results to return", "default": 10}
             },
             "required": ["stat", "season"]
         }
@@ -400,7 +416,7 @@ def get_team_stats(team: str, year: int, type: str = "batting"):
         raise HTTPException(status_code=404, detail=str(e))
 
 @app.get("/leaderboard")
-def get_leaderboard(stat: str, season: int, type: str = "batting"):
+def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = Query(10, description="Number of results to return")):
     """
     Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'.
     """
@@ -408,7 +424,7 @@ def get_leaderboard(stat: str, season: int, type: str = "batting"):
     if season > current_year + 1: # Allow current year and next year only
         error_msg = f"Invalid season: {season}. Year cannot be more than 1 year in the future."
         print(error_msg)
-        raise ValueError(error_msg)
+        return {"content": [], "error": error_msg}
 
     # Mapping of friendly stat names to actual DataFrame columns
     STAT_COLUMN_MAP = {
@@ -421,59 +437,88 @@ def get_leaderboard(stat: str, season: int, type: str = "batting"):
     }
 
     try:
-        # Lazy load pybaseballstats only when this function is called
         pb = load_pybaseball()
-        from pybaseballstats import fangraphs
-        from pybaseballstats.utils.fangraphs_consts import (
-            FangraphsBattingStatType,
-            FangraphsPitchingStatType,
-            FangraphsTeams,
-        )
-
-        if type.lower() == "batting":
-            leaderboard = fangraphs.fangraphs_batting_range(
-                start_year=season,
-                end_year=season,
-                stat_types=[FangraphsBattingStatType.DASHBOARD],
-                team=FangraphsTeams.ALL,
-                return_pandas=True,
+        if pb is None:
+            return {"content": [], "error": "Neither pybaseballstats nor pybaseball is installed."}
+        # Use pybaseballstats if loaded
+        if getattr(pb, "_source", None) == "pybaseballstats":
+            from pybaseballstats import fangraphs
+            from pybaseballstats.utils.fangraphs_consts import (
+                FangraphsBattingStatType,
+                FangraphsPitchingStatType,
+                FangraphsTeams,
             )
-        elif type.lower() == "pitching":
-            leaderboard = fangraphs.fangraphs_pitching_range(
-                start_year=season,
-                end_year=season,
-                stat_types=[FangraphsPitchingStatType.DASHBOARD],
-                team=FangraphsTeams.ALL,
-                return_pandas=True,
-            )
+            if type.lower() == "batting":
+                leaderboard = fangraphs.fangraphs_batting_range(
+                    start_year=season,
+                    end_year=season,
+                    stat_types=[FangraphsBattingStatType.DASHBOARD],
+                    team=FangraphsTeams.ALL,
+                    return_pandas=True,
+                )
+            elif type.lower() == "pitching":
+                leaderboard = fangraphs.fangraphs_pitching_range(
+                    start_year=season,
+                    end_year=season,
+                    stat_types=[FangraphsPitchingStatType.DASHBOARD],
+                    team=FangraphsTeams.ALL,
+                    return_pandas=True,
+                )
+            else:
+                return {"content": [], "error": "Type must be 'batting' or 'pitching'."}
+            if hasattr(leaderboard, "to_pandas"):
+                leaderboard = leaderboard.to_pandas()
+            if leaderboard.empty:
+                return {"content": []}
+            print(f"Available columns: {leaderboard.columns.tolist()}")
+            column_name = STAT_COLUMN_MAP.get(stat, stat)
+            if column_name not in leaderboard.columns:
+                return {"content": [], "error": f"Stat '{stat}' (mapped to '{column_name}') not found. Available columns: {leaderboard.columns.tolist()}"}
+            sorted_leaderboard = leaderboard.sort_values(by=column_name, ascending=False).reset_index(drop=True)
+            # Ensure player name column is present and standardized as 'Name'
+            name_columns = [col for col in sorted_leaderboard.columns if col.lower() in ["name", "player", "player_name"]]
+            if name_columns:
+                sorted_leaderboard = sorted_leaderboard.rename(columns={name_columns[0]: "Name"})
+            else:
+                sorted_leaderboard["Name"] = None
+            # Robustly sanitize DataFrame for JSON
+            sorted_leaderboard = sorted_leaderboard.replace([np.inf, -np.inf, float('inf'), float('-inf')], np.nan)
+            sorted_leaderboard = sorted_leaderboard.where(pd.notnull(sorted_leaderboard), None)
+            sorted_leaderboard = sorted_leaderboard.applymap(safe_json)
+            records = sorted_leaderboard.to_dict(orient="records")
+            return {"content": sanitize_json(records[:limit])}
+        # Use pybaseball if loaded
+        elif getattr(pb, "_source", None) == "pybaseball":
+            if type.lower() == "batting":
+                df = pb.batting_stats(season)
+            elif type.lower() == "pitching":
+                df = pb.pitching_stats(season)
+            else:
+                return {"content": [], "error": "Type must be 'batting' or 'pitching'."}
+            if df.empty:
+                return {"content": []}
+            print(f"Available columns: {df.columns.tolist()}")
+            column_name = STAT_COLUMN_MAP.get(stat, stat)
+            if column_name not in df.columns:
+                return {"content": [], "error": f"Stat '{stat}' (mapped to '{column_name}') not found. Available columns: {df.columns.tolist()}"}
+            sorted_df = df.sort_values(by=column_name, ascending=False).reset_index(drop=True)
+            # Ensure player name column is present and standardized as 'Name'
+            name_columns = [col for col in sorted_df.columns if col.lower() in ["name", "player", "player_name"]]
+            if name_columns:
+                sorted_df = sorted_df.rename(columns={name_columns[0]: "Name"})
+            else:
+                sorted_df["Name"] = None
+            # Robustly sanitize DataFrame for JSON
+            sorted_df = sorted_df.replace([np.inf, -np.inf, float('inf'), float('-inf')], np.nan)
+            sorted_df = sorted_df.where(pd.notnull(sorted_df), None)
+            sorted_df = sorted_df.applymap(safe_json)
+            records = sorted_df.to_dict(orient="records")
+            return {"content": sanitize_json(records[:limit])}
         else:
-            raise ValueError("Type must be 'batting' or 'pitching'.")
-            
-        if hasattr(leaderboard, "to_pandas"):
-            leaderboard = leaderboard.to_pandas()
-
-        if leaderboard.empty:
-            raise ValueError(f"No leaderboard data found for {stat} in {season}.")
-
-        # Log available columns for debugging
-        print(f"Available columns: {leaderboard.columns.tolist()}")
-
-        # Map friendly stat name to actual column name
-        column_name = STAT_COLUMN_MAP.get(stat, stat)
-        if column_name not in leaderboard.columns:
-            raise ValueError(f"Stat '{stat}' (mapped to '{column_name}') not found in leaderboard columns. Available columns: {leaderboard.columns.tolist()}")
-            
-        sorted_leaderboard = leaderboard.sort_values(by=column_name, ascending=False).reset_index(drop=True)
-        return {
-            "stat": stat,
-            "season": season,
-            "type": type,
-            "count": len(sorted_leaderboard),
-            "leaderboard": sorted_leaderboard.to_dict(orient="records")
-        }
+            return {"content": [], "error": "Unknown baseball package loaded."}
     except Exception as e:
         print(f"Error in get_leaderboard: {str(e)}")
-        raise HTTPException(status_code=404, detail=str(e))
+        return {"content": [], "error": str(e)}
 
 @app.get("/stats/options")
 def get_stat_options(
@@ -845,3 +890,24 @@ def mlb_video_search(
         return JSONResponse(content={"videos": videos})
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+def safe_json(val):
+    try:
+        if isinstance(val, float):
+            if not np.isfinite(val):
+                return None
+        return val
+    except Exception:
+        return None
+
+def sanitize_json(obj):
+    if isinstance(obj, float):
+        if not np.isfinite(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_json(v) for v in obj]
+    else:
+        return obj
