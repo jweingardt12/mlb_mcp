@@ -350,6 +350,8 @@ async def mcp_tools_call(request: Request):
 
 @app.get("/player")
 def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Optional[str] = None):
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="Player name must be provided.")
     """
     Get player statcast data by name (optionally filter by date range: YYYY-MM-DD).
     """
