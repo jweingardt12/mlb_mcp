@@ -66,12 +66,11 @@ tools:
         - "season"
 
 runtime: container
-# The command to start the server (e.g., Uvicorn) should now be in your Dockerfile's CMD or ENTRYPOINT.
+# The command to start the server (e.g., Uvicorn) is defined in the Dockerfile's CMD.
 # Smithery will expect the server to listen on the $PORT environment variable.
-# Example startCommand structure for HTTP, if further configuration schema is needed later:
-# startCommand:
-#   type: "http"
-#   configSchema: 
-#     type: "object"
-#     properties: {}
-#   exampleConfig: {}
+startCommand:
+  type: "http"
+  configSchema:
+    type: "object"
+    properties: {}  # No specific configuration properties required by this MCP server.
+  exampleConfig: {}   # No example config needed as there are no properties.
