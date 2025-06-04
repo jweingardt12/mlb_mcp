@@ -340,6 +340,12 @@ def get_team_stats(team: str, year: int, type: str = "batting"):
     """
     Get team stats for a given team and year. Type can be 'batting' or 'pitching'.
     """
+    current_server_year = datetime.now().year
+    if year > current_server_year + 1: # Allow current year and next year only
+        error_msg = f"Invalid year: {year}. Year cannot be more than 1 year in the future."
+        print(error_msg)
+        raise ValueError(error_msg)
+
     try:
         # Lazy load pybaseball only when this function is called
         pb = load_pybaseball()
