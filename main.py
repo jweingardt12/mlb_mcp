@@ -477,6 +477,22 @@ def get_leaderboard(
         print(error_msg)
         return {"content": [], "error": error_msg}
 
+    # Statcast metrics that should redirect to statcast_leaderboard
+    STATCAST_METRICS = {"ev", "exitevelocity", "exit_velocity", "exitvelocity", "maxev", "max_exit_velocity", "launch_speed", "launchangle", "launch_angle", "hit_distance", "hitdistance", "distance"}
+    stat_norm = stat.lower().replace("_", "")
+    if stat_norm in STATCAST_METRICS:
+        # Use date or start_date/end_date for statcast_leaderboard
+        if date:
+            start = end = date
+        elif start_date and end_date:
+            start, end = start_date, end_date
+        else:
+            # Default to season's first and last day if possible
+            start = f"{season}-03-01"
+            end = f"{season}-11-30"
+        # Call statcast_leaderboard and return its result
+        return statcast_leaderboard(start_date=start, end_date=end, limit=limit)
+
     # Friendly mapping for common aliases
     FRIENDLY_STAT_MAP = {
         # Batting
@@ -1257,36 +1273,28 @@ def sanitize_json(obj):
 # Example MLB video search query for hardest hit balls on 4-seam fastballs in 2023
 # GET /mlb/video_search?queries=PitchType = ["FF"] AND Season = ["2023"] Order By ExitVelocity DESC
 
-@app.get("/statcast/leaderboard")
+# --- Statcast leaderboard logic as a plain function ---
 def statcast_leaderboard(
-    start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
-    end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
-    limit: int = Query(10, description="Number of results to return"),
-    min_ev: float = Query(None, description="Minimum exit velocity (optional)"),
-    result: str = Query(None, description="Filter by result type, e.g., 'home_run' (optional)")
+    start_date: str,
+    end_date: str,
+    limit: int = 10,
+    min_ev: float = None,
+    result: str = None
 ):
-    """
-    Get the top batted balls (per-play) for a given date range, sorted by exit velocity. Includes all play-level details and video if available.
-    """
     pb = load_pybaseball()
     if pb is None:
         return {"content": [], "error": "Neither pybaseballstats nor pybaseball is installed."}
-    # Get Statcast data
     try:
         df = pb.statcast(start_dt=start_date, end_dt=end_date)
         if df.empty:
             return {"content": []}
-        # Filter for batted balls only (must have exit_velocity)
         df = df[df["launch_speed"].notnull()]
         if min_ev is not None:
             df = df[df["launch_speed"] >= min_ev]
         if result is not None:
-            # Try to match result in 'events' or 'description' columns
             mask = df["events"].str.lower().str.contains(result.lower(), na=False) | df["description"].str.lower().str.contains(result.lower(), na=False)
             df = df[mask]
-        # Sort by exit velocity
         df = df.sort_values(by="launch_speed", ascending=False).reset_index(drop=True)
-        # Build output records
         records = []
         batter_id_to_name = {}
         def get_player_name(player_id):
@@ -1307,31 +1315,15 @@ def statcast_leaderboard(
                 print(f"Error reverse looking up player name for ID {player_id_int}: {e}")
             batter_id_to_name[player_id_int] = str(player_id_int)
             return str(player_id_int)
-        # Statcast pitch type code to name mapping
         PITCH_TYPE_MAP = {
-            'FF': 'Four-Seam Fastball',
-            'FT': 'Two-Seam Fastball',
-            'SI': 'Sinker',
-            'FC': 'Cutter',
-            'FS': 'Splitter',
-            'FO': 'Forkball',
-            'SL': 'Slider',
-            'CH': 'Changeup',
-            'CU': 'Curveball',
-            'KC': 'Knuckle Curve',
-            'KN': 'Knuckleball',
-            'EP': 'Eephus',
-            'SC': 'Screwball',
-            'ST': 'Sweeper',
-            'SV': 'Slurve',
-            'CS': 'Slow Curve',
-            'UN': 'Unknown',
-            # Add more as needed
+            'FF': 'Four-Seam Fastball', 'FT': 'Two-Seam Fastball', 'SI': 'Sinker', 'FC': 'Cutter',
+            'FS': 'Splitter', 'FO': 'Forkball', 'SL': 'Slider', 'CH': 'Changeup', 'CU': 'Curveball',
+            'KC': 'Knuckle Curve', 'KN': 'Knuckleball', 'EP': 'Eephus', 'SC': 'Screwball', 'ST': 'Sweeper',
+            'SV': 'Slurve', 'CS': 'Slow Curve', 'UN': 'Unknown',
         }
         for _, row in df.head(limit).iterrows():
             batter_id = row.get("batter")
             pitcher_id = row.get("pitcher")
-            # Determine batter's team and opponent team
             home_team = row.get("home_team")
             away_team = row.get("away_team")
             inning_topbot = row.get("inning_topbot")
@@ -1355,16 +1347,12 @@ def statcast_leaderboard(
                 "pitch_type_name": PITCH_TYPE_MAP.get(row.get("pitch_type"), row.get("pitch_type")),
                 "pitch_velocity": row.get("release_speed"),
             }
-            # Construct MLB.com video search URL for home runs
             mlb_video_url = None
             if rec["result"] and "home_run" in str(rec["result"]).lower() and rec["batter_name"] and rec["date"]:
-                # Format: https://www.mlb.com/video/{batter_name}-home-run-on-{date}
-                # Fallback: MLB.com search URL
                 batter_slug = rec["batter_name"].replace(" ", "-").lower()
                 date_str = str(rec["date"]).split("T")[0]
                 search_query = f"{rec['batter_name']} home run {date_str}"
                 mlb_video_url = f"https://www.mlb.com/video/search?q={search_query.replace(' ', '%20')}"
-            # Try to find video for this play
             video_query_parts = [
                 f'Player = ["{rec["batter_name"]}"]',
                 f'Date = ["{rec["date"]}"]',
@@ -1400,3 +1388,20 @@ def statcast_leaderboard(
     except Exception as e:
         print(f"Error in statcast_leaderboard: {e}")
         return {"content": [], "error": str(e)}
+
+# --- FastAPI endpoint for statcast leaderboard ---
+@app.get("/statcast/leaderboard")
+def statcast_leaderboard_endpoint(
+    start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
+    end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
+    limit: int = Query(10, description="Number of results to return"),
+    min_ev: float = Query(None, description="Minimum exit velocity (optional)"),
+    result: str = Query(None, description="Filter by result type, e.g., 'home_run' (optional)")
+):
+    return statcast_leaderboard(
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        min_ev=min_ev,
+        result=result
+    )
