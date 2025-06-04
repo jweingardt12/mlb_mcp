@@ -1375,19 +1375,15 @@ def statcast_leaderboard(
                     data = resp.json()
                     content = data.get("content", [])
                     if content and isinstance(content, list) and content[0].get("resource", {}).get("uri"):
-                        rec["video"] = content[0]
                         rec["mlb_video_url"] = content[0]["resource"]["uri"]
                     else:
-                        rec["video"] = None
                         if mlb_video_url:
                             rec["mlb_video_url"] = mlb_video_url
                 else:
-                    rec["video"] = None
                     if mlb_video_url:
                         rec["mlb_video_url"] = mlb_video_url
             except Exception as e:
                 print(f"Error finding video for {rec['batter_name']} on {rec['date']}: {e}")
-                rec["video"] = None
                 if mlb_video_url:
                     rec["mlb_video_url"] = mlb_video_url
             records.append(rec)
