@@ -65,9 +65,9 @@ def handle_rpc(method, params, rpc_id):
                 # Fall through to the JSON-RPC POST endpoint if response_data is still None
         
         if response_data is None: # If not tools/list or if GET /tools failed
-            sys.stderr.write(f"INFO: [{rpc_id}] Sending to JSON-RPC endpoint: {json.dumps(jsonrpc_request)}\n")
+            sys.stderr.write(f"INFO: [{rpc_id}] Sending to JSON-RPC endpoint (/mcp): {json.dumps(jsonrpc_request)}\n")
             t_post_start = time.time()
-            resp = requests.post(f"{FASTAPI_URL}/jsonrpc", json=jsonrpc_request, timeout=5.0)
+            resp = requests.post(f"{FASTAPI_URL}/mcp", json=jsonrpc_request, timeout=5.0)
             t_post_end = time.time()
             sys.stderr.write(f"INFO: [{rpc_id}] POST /jsonrpc for method '{method}' completed in {t_post_end - t_post_start:.4f}s, status: {resp.status_code}\n")
             
