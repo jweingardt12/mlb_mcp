@@ -930,7 +930,7 @@ async def mlb_video_search(request: Request):
                     player_name = play_info["players"]["batter"].get("name")
                 if "teams" in play_info and "batting" in play_info["teams"]:
                     team = play_info["teams"]["batting"].get("name")
-                videos.append({
+                video_obj = {
                     "id": mp.get("id"),
                     "slug": mp.get("slug"),
                     "title": mp.get("title"),
@@ -942,7 +942,8 @@ async def mlb_video_search(request: Request):
                     "video_urls": video_urls,
                     "image_url": image_url,
                     "statcast": statcast
-                })
+                }
+                videos.append({"type": "resource", "resource": video_obj})
         return {"content": videos}
     except Exception as e:
         return {"error": str(e)}
