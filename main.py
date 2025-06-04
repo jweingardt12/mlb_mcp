@@ -142,7 +142,8 @@ STATIC_TOOLS = [
                 "stat": {"type": "string", "description": "Statistic to get leaderboard for (e.g., 'HR', 'AVG', 'ERA')"},
                 "season": {"type": "integer", "description": "Season year to get leaderboard for"},
                 "type": {"type": "string", "description": "Type of leaderboard (batting or pitching)", "enum": ["batting", "pitching"]},
-                "limit": {"type": "integer", "description": "Number of results to return", "default": 10}
+                "limit": {"type": "integer", "description": "Number of results to return", "default": 10},
+                "as_text": {"type": "boolean", "description": "Return a text summary of the leaderboard", "default": False}
             },
             "required": ["stat", "season"]
         }
@@ -440,7 +441,7 @@ def get_team_stats(team: str, year: int, type: str = "batting"):
         raise HTTPException(status_code=404, detail=str(e))
 
 @app.get("/leaderboard")
-def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = Query(10, description="Number of results to return")):
+def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = Query(10, description="Number of results to return"), as_text: bool = False):
     """
     Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'.
     """
@@ -450,15 +451,65 @@ def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = 
         print(error_msg)
         return {"content": [], "error": error_msg}
 
-    # Mapping of friendly stat names to actual DataFrame columns
-    STAT_COLUMN_MAP = {
-        "avg_exit_velocity": "EV",  # Example, check actual column name in logs
-        "exit_velocity_avg": "EV",
-        "HR": "HR",
-        "AVG": "AVG",
-        "ERA": "ERA",
-        # Add more mappings as needed
+    # Friendly mapping for common aliases
+    FRIENDLY_STAT_MAP = {
+        # Batting
+        "exit_velocity": "EV", "exitvelocity": "EV", "exit_velocity_avg": "EV", "avg_exit_velocity": "EV", "ev": "EV",
+        "launch_angle": "LA", "avg_launch_angle": "LA", "la": "LA",
+        "barrels": "Barrels", "barrel_count": "Barrels",
+        "barrel_rate": "Barrel%", "barrel%": "Barrel%",
+        "max_exit_velocity": "maxEV", "maxev": "maxEV", "hardest_hit": "maxEV",
+        "hard_hit": "HardHit", "hardhit": "HardHit", "hard_hit_count": "HardHit",
+        "hard_hit_rate": "HardHit%", "hardhit%": "HardHit%", "hard_hit%": "HardHit%",
+        "events": "Events",
+        "xba": "xBA", "expected_ba": "xBA",
+        "xslg": "xSLG", "expected_slg": "xSLG",
+        "xwoba": "xwOBA", "expected_woba": "xwOBA",
+        "woba": "wOBA",
+        "wrc+": "wRC+", "wrcplus": "wRC+",
+        "war": "WAR",
+        "hr": "HR", "home_runs": "HR",
+        "avg": "AVG", "batting_average": "AVG",
+        "obp": "OBP",
+        "slg": "SLG",
+        "iso": "ISO",
+        "babip": "BABIP",
+        "sb": "SB", "stolen_bases": "SB",
+        "rbi": "RBI",
+        "r": "R",
+        "ab": "AB",
+        "pa": "PA",
+        "so": "SO", "k": "SO", "strikeouts": "SO",
+        "bb": "BB", "walks": "BB",
+        "age": "Age",
+        "team": "Team",
+        "name": "Name", "player": "Name",
+        # Pitching
+        "era": "ERA",
+        "wins": "W", "w": "W",
+        "losses": "L", "l": "L",
+        "gs": "GS",
+        "cg": "CG",
+        "sho": "ShO",
+        "sv": "SV",
+        "ip": "IP",
+        "tbf": "TBF",
+        "er": "ER",
+        "whip": "WHIP",
+        "fip": "FIP",
+        "xfip": "xFIP",
+        "k9": "K/9",
+        "bb9": "BB/9",
+        "kbb": "K/BB",
+        "h9": "H/9",
+        "hr9": "HR/9",
+        "lob%": "LOB%",
+        "siera": "SIERA",
+        # Add more as needed
     }
+
+    def normalize_key(key):
+        return key.lower().replace("_", "")
 
     try:
         pb = load_pybaseball()
@@ -495,21 +546,33 @@ def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = 
             if leaderboard.empty:
                 return {"content": []}
             print(f"Available columns: {leaderboard.columns.tolist()}")
-            column_name = STAT_COLUMN_MAP.get(stat, stat)
+            # Build dynamic mapping for all columns
+            norm_col_map = {normalize_key(col): col for col in leaderboard.columns}
+            stat_norm = normalize_key(stat)
+            # Prefer friendly mapping, else any available column
+            column_name = FRIENDLY_STAT_MAP.get(stat_norm, None)
+            if not column_name:
+                column_name = norm_col_map.get(stat_norm, stat)
             if column_name not in leaderboard.columns:
                 return {"content": [], "error": f"Stat '{stat}' (mapped to '{column_name}') not found. Available columns: {leaderboard.columns.tolist()}"}
             sorted_leaderboard = leaderboard.sort_values(by=column_name, ascending=False).reset_index(drop=True)
-            # Ensure player name column is present and standardized as 'Name'
             name_columns = [col for col in sorted_leaderboard.columns if col.lower() in ["name", "player", "player_name"]]
             if name_columns:
                 sorted_leaderboard = sorted_leaderboard.rename(columns={name_columns[0]: "Name"})
             else:
                 sorted_leaderboard["Name"] = None
-            # Robustly sanitize DataFrame for JSON
             sorted_leaderboard = sorted_leaderboard.replace([np.inf, -np.inf, float('inf'), float('-inf')], np.nan)
             sorted_leaderboard = sorted_leaderboard.where(pd.notnull(sorted_leaderboard), None)
             sorted_leaderboard = sorted_leaderboard.applymap(safe_json)
             records = sorted_leaderboard.to_dict(orient="records")
+            if as_text:
+                lines = [f"{season} {type.title()} Leaderboard for {stat} (column: {column_name}):"]
+                for i, row in enumerate(records[:limit]):
+                    name = row.get("Name", "N/A")
+                    team = row.get("Team", "N/A")
+                    value = row.get(column_name, "N/A")
+                    lines.append(f"{i+1}. Name: {name}, Team: {team}, {column_name}: {value}")
+                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
             return {"content": sanitize_json(records[:limit])}
         # Use pybaseball if loaded
         elif getattr(pb, "_source", None) == "pybaseball":
@@ -522,21 +585,31 @@ def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = 
             if df.empty:
                 return {"content": []}
             print(f"Available columns: {df.columns.tolist()}")
-            column_name = STAT_COLUMN_MAP.get(stat, stat)
+            norm_col_map = {normalize_key(col): col for col in df.columns}
+            stat_norm = normalize_key(stat)
+            column_name = FRIENDLY_STAT_MAP.get(stat_norm, None)
+            if not column_name:
+                column_name = norm_col_map.get(stat_norm, stat)
             if column_name not in df.columns:
-                return {"content": [], "error": f"Stat '{stat}' (mapped to '{column_name}') not found. Available columns: {df.columns.tolist()}"}
+                return {"content": [], "error": f"Stat '{stat}' (mapped to '{column_name}') not found. Available columns: {df.columns.tolist()}`"}
             sorted_df = df.sort_values(by=column_name, ascending=False).reset_index(drop=True)
-            # Ensure player name column is present and standardized as 'Name'
             name_columns = [col for col in sorted_df.columns if col.lower() in ["name", "player", "player_name"]]
             if name_columns:
                 sorted_df = sorted_df.rename(columns={name_columns[0]: "Name"})
             else:
                 sorted_df["Name"] = None
-            # Robustly sanitize DataFrame for JSON
             sorted_df = sorted_df.replace([np.inf, -np.inf, float('inf'), float('-inf')], np.nan)
             sorted_df = sorted_df.where(pd.notnull(sorted_df), None)
             sorted_df = sorted_df.applymap(safe_json)
             records = sorted_df.to_dict(orient="records")
+            if as_text:
+                lines = [f"{season} {type.title()} Leaderboard for {stat} (column: {column_name}):"]
+                for i, row in enumerate(records[:limit]):
+                    name = row.get("Name", "N/A")
+                    team = row.get("Team", "N/A")
+                    value = row.get(column_name, "N/A")
+                    lines.append(f"{i+1}. Name: {name}, Team: {team}, {column_name}: {value}")
+                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
             return {"content": sanitize_json(records[:limit])}
         else:
             return {"content": [], "error": "Unknown baseball package loaded."}
@@ -930,9 +1003,12 @@ async def mlb_video_search(request: Request):
                     player_name = play_info["players"]["batter"].get("name")
                 if "teams" in play_info and "batting" in play_info["teams"]:
                     team = play_info["teams"]["batting"].get("name")
+                slug = mp.get("slug")
+                uri = f"https://www.mlb.com/video/{slug}" if slug else None
+                text = mp.get("title") or mp.get("description") or mp.get("blurb")
                 video_obj = {
                     "id": mp.get("id"),
-                    "slug": mp.get("slug"),
+                    "slug": slug,
                     "title": mp.get("title"),
                     "description": mp.get("description"),
                     "date": mp.get("date"),
@@ -941,7 +1017,9 @@ async def mlb_video_search(request: Request):
                     "team": team,
                     "video_urls": video_urls,
                     "image_url": image_url,
-                    "statcast": statcast
+                    "statcast": statcast,
+                    "uri": uri,
+                    "text": text
                 }
                 videos.append({"type": "resource", "resource": video_obj})
         return {"content": videos}
