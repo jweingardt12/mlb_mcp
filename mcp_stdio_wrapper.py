@@ -9,13 +9,16 @@ FASTAPI_URL = "http://localhost:8000"
 # Allow the FastAPI server extra time to start up in case package imports are slow
 # Smithery will wait for the wrapper to respond on STDIO, so we loop up to 60
 # times (about 30 seconds) before giving up.
+sys.stderr.write("INFO: Waiting for FastAPI server to start...\n")
 for _ in range(60):  # Try for up to 30 seconds
     try:
-        r = requests.get(f"{FASTAPI_URL}/docs", timeout=0.5)
+        # Use the root endpoint instead of /docs since we disabled the docs endpoints
+        r = requests.get(f"{FASTAPI_URL}/", timeout=0.5)
         if r.status_code == 200:
+            sys.stderr.write(f"INFO: FastAPI server is ready: {r.text}\n")
             break
-    except Exception:
-        pass
+    except Exception as e:
+        sys.stderr.write(f"INFO: Waiting for server... ({str(e)})\n")
     time.sleep(0.5)
 else:
     sys.stderr.write("ERROR: FastAPI server did not start in time.\n")
@@ -56,13 +59,22 @@ def handle_rpc(method, params, rpc_id):
     elif method == "get_leaderboard":
         resp = requests.get(f"{FASTAPI_URL}/leaderboard", params=params)
     elif method == "tools/list":
-        resp = requests.post(f"{FASTAPI_URL}/tools/list", json={})
-        data = resp.json()
-        # If the FastAPI endpoint returns a JSON-RPC response, extract the 'result' field
-        if "result" in data:
-            return {"jsonrpc": "2.0", "result": data["result"], "id": rpc_id}
-        else:
+        try:
+            # First try the lightweight GET endpoint for faster response
+            resp = requests.get(f"{FASTAPI_URL}/tools", timeout=1.0)
+            data = resp.json()
+            sys.stderr.write(f"INFO: Got tools list from /tools endpoint: {json.dumps(data)}\n")
             return {"jsonrpc": "2.0", "result": data, "id": rpc_id}
+        except Exception as e:
+            sys.stderr.write(f"WARN: Failed to get tools from /tools, falling back to /tools/list: {str(e)}\n")
+            # Fall back to the standard JSON-RPC endpoint if needed
+            resp = requests.post(f"{FASTAPI_URL}/tools/list", json={})
+            data = resp.json()
+            # If the FastAPI endpoint returns a JSON-RPC response, extract the 'result' field
+            if "result" in data:
+                return {"jsonrpc": "2.0", "result": data["result"], "id": rpc_id}
+            else:
+                return {"jsonrpc": "2.0", "result": data, "id": rpc_id}
     else:
         return {
             "jsonrpc": "2.0",

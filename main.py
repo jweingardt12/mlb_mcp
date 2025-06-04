@@ -14,9 +14,8 @@ pybaseball = None
 app = FastAPI(
     title="MLB Stats MCP",
     description="MCP server exposing MLB/Fangraphs data via pybaseball.",
-    # Disable OpenAPI docs to speed up startup
-    openapi_url=None,
-    docs_url=None,
+    # Keep docs enabled but with minimal overhead
+    docs_url="/docs",
     redoc_url=None
 )
 
