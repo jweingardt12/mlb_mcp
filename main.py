@@ -154,6 +154,8 @@ async def jsonrpc_endpoint(request: Request):
             }
         elif method == "shutdown":
             return {"jsonrpc": "2.0", "result": None, "id": rpc_id}
+        elif method == "ping":
+            return {"jsonrpc": "2.0", "result": {}, "id": rpc_id}  # Simple pong with empty object
         elif method == "tools/list":
             return {
                 "jsonrpc": "2.0",
