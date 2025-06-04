@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request, HTTPException
+import datetime
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import importlib
@@ -370,6 +371,12 @@ def get_leaderboard(stat: str, season: int, type: str = "batting"):
     """
     Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'.
     """
+    current_year = datetime.datetime.now().year
+    if season > current_year + 1: # Allow current year and next year only
+        error_msg = f"Invalid season: {season}. Year cannot be more than 1 year in the future."
+        print(error_msg)
+        raise ValueError(error_msg)
+
     try:
         # Lazy load pybaseball only when this function is called
         pb = load_pybaseball()
