@@ -156,6 +156,19 @@ async def jsonrpc_endpoint(request: Request):
             return {"jsonrpc": "2.0", "result": None, "id": rpc_id}
         elif method == "ping":
             return {"jsonrpc": "2.0", "result": {}, "id": rpc_id}  # Simple pong with empty object
+        elif method == "tools/call":
+            # Handle gateway-style tool calls
+            actual_tool_name = params.get("name")
+            actual_tool_params = params.get("parameters", {})
+            if actual_tool_name in ["get_player_stats", "get_team_stats", "get_leaderboard"]:
+                result = call_tool(actual_tool_name, actual_tool_params)
+                return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32601, "message": f"Tool not found within tools/call: {actual_tool_name}"},
+                    "id": rpc_id
+                }
         elif method == "tools/list":
             return {
                 "jsonrpc": "2.0",
