@@ -53,7 +53,7 @@ def handle_rpc(method, params, rpc_id):
         if method == "tools/list":
             try:
                 # First try the lightweight GET endpoint for faster response
-                resp = requests.get(f"{FASTAPI_URL}/tools", timeout=1.0)
+                resp = requests.get(f"{FASTAPI_URL}/tools", timeout=3.0)
                 data = resp.json()
                 sys.stderr.write(f"INFO: Got tools list from /tools endpoint: {json.dumps(data)}\n")
                 return {"jsonrpc": "2.0", "result": data, "id": rpc_id}
