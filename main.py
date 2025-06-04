@@ -116,7 +116,14 @@ async def tools_list_get():
     """Lightweight endpoint for tool discovery that responds instantly"""
     return {"tools": STATIC_TOOLS}
 
-@app.post("/jsonrpc")
+@app.get("/mcp")
+async def mcp_get_handler():
+    """Handles GET requests to the /mcp endpoint, primarily for tool discovery."""
+    # Smithery's technical requirements state /mcp must handle GET.
+    # Returning the tools list here provides another discovery mechanism.
+    return {"tools": STATIC_TOOLS}
+
+@app.post("/mcp")
 async def jsonrpc_endpoint(request: Request):
     """Generic JSON-RPC endpoint for all MCP operations"""
     try:
