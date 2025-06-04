@@ -73,7 +73,6 @@ def with_timeout(timeout_seconds=10):
     return decorator
 
 def call_tool(tool_name, params):
-    # Load pybaseball only when a tool is actually called
     pb = load_pybaseball() # Assuming load_pybaseball() is robust or its errors can propagate
 
     try:
@@ -83,15 +82,27 @@ def call_tool(tool_name, params):
             return get_team_stats(**params)
         elif tool_name == "get_leaderboard":
             return get_leaderboard(**params)
+        elif tool_name == "mlb_video_search":
+            # Call the endpoint logic directly
+            # params: query, limit, page
+            from fastapi import Request
+            class DummyRequest:
+                def __init__(self, json_data):
+                    self._json = json_data
+                async def json(self):
+                    return self._json
+            # Call the async endpoint in a sync context
+            import asyncio
+            coro = mlb_video_search(DummyRequest(params))
+            if asyncio.iscoroutine(coro):
+                return asyncio.get_event_loop().run_until_complete(coro)
+            else:
+                return coro
         else:
-            # This case should ideally be caught by the checks in jsonrpc_endpoint
-            # before calling call_tool, but as a safeguard:
             raise ValueError(f"Unknown tool: {tool_name}")
     except Exception as e:
         error_message = f"Error executing tool '{tool_name}' with params '{params}': {str(e)}"
-        print(error_message) # Log to server console (Smithery logs)
-        # Re-raise the exception so it can be caught by the jsonrpc_endpoint's main error handler
-        # and returned as a proper JSON-RPC error response to the client.
+        print(error_message)
         raise e
 
 # Define the tools statically to avoid any computation during tool listing
@@ -134,6 +145,19 @@ STATIC_TOOLS = [
                 "limit": {"type": "integer", "description": "Number of results to return", "default": 10}
             },
             "required": ["stat", "season"]
+        }
+    },
+    {
+        "name": "mlb_video_search",
+        "description": "Search MLB video highlights using the MLB Film Room API. Returns a list of flattened video highlight objects for the given query.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "MLB Film Room search query (e.g., 'Season = [2023] AND HitResult = [\"Home Run\"]')"},
+                "limit": {"type": "integer", "description": "Number of results to return", "default": 10},
+                "page": {"type": "integer", "description": "Page number for pagination", "default": 0}
+            },
+            "required": ["query"]
         }
     }
 ]
