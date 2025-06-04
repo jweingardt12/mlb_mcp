@@ -1,7 +1,7 @@
 # Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
 
 # Publishing Information
-name: mlb-mcp
+name: mlb_mcp
 displayName: "MLB Baseball Stats API"
 description: "MCP server exposing MLB/Fangraphs data via pybaseball. Access player statistics, team data, and leaderboards."
 author: jweingardt12
