@@ -135,7 +135,7 @@ STATIC_TOOLS = [
     },
     {
         "name": "get_leaderboard",
-        "description": "Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'",
+        "description": "Get leaderboard for a given stat and season. Use this for stats/leaderboards, not for video highlights.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -143,14 +143,15 @@ STATIC_TOOLS = [
                 "season": {"type": "integer", "description": "Season year to get leaderboard for"},
                 "type": {"type": "string", "description": "Type of leaderboard (batting or pitching)", "enum": ["batting", "pitching"]},
                 "limit": {"type": "integer", "description": "Number of results to return", "default": 10},
-                "as_text": {"type": "boolean", "description": "Return a text summary of the leaderboard", "default": False}
+                "as_text": {"type": "boolean", "description": "Return a text summary of the leaderboard", "default": False},
+                "month": {"type": "integer", "description": "Month to filter leaderboard", "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], "default": None}
             },
             "required": ["stat", "season"]
         }
     },
     {
         "name": "mlb_video_search",
-        "description": "Search MLB video highlights using the MLB Film Room API. Returns a list of flattened video highlight objects for the given query.",
+        "description": "Search MLB video highlights using the MLB Film Room API. Use this ONLY for video/highlight queries, not for stats or leaderboards.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -441,9 +442,9 @@ def get_team_stats(team: str, year: int, type: str = "batting"):
         raise HTTPException(status_code=404, detail=str(e))
 
 @app.get("/leaderboard")
-def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = Query(10, description="Number of results to return"), as_text: bool = False):
+def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = Query(10, description="Number of results to return"), as_text: bool = False, month: int = None):
     """
-    Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'.
+    Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'. Optionally filter by month (1-12).
     """
     current_year = datetime.now().year
     if season > current_year + 1: # Allow current year and next year only
@@ -573,6 +574,8 @@ def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = 
                     value = row.get(column_name, "N/A")
                     lines.append(f"{i+1}. Name: {name}, Team: {team}, {column_name}: {value}")
                 return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+            if month is not None and "Month" in leaderboard.columns:
+                leaderboard = leaderboard[leaderboard["Month"] == month]
             return {"content": sanitize_json(records[:limit])}
         # Use pybaseball if loaded
         elif getattr(pb, "_source", None) == "pybaseball":
@@ -610,6 +613,8 @@ def get_leaderboard(stat: str, season: int, type: str = "batting", limit: int = 
                     value = row.get(column_name, "N/A")
                     lines.append(f"{i+1}. Name: {name}, Team: {team}, {column_name}: {value}")
                 return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+            if month is not None and "Month" in df.columns:
+                df = df[df["Month"] == month]
             return {"content": sanitize_json(records[:limit])}
         else:
             return {"content": [], "error": "Unknown baseball package loaded."}
@@ -931,6 +936,13 @@ async def mlb_video_search(request: Request):
         query = data.get("query")
         limit = data.get("limit", 10)
         page = data.get("page", 0)
+        # Guard clause for video-related queries
+        video_keywords = ["video", "highlight", "clip", "watch", "playback", "film room"]
+        if not any(kw in query.lower() for kw in video_keywords):
+            return {
+                "content": [],
+                "error": "This tool is for video/highlight queries only. For stats or leaderboards, use the get_leaderboard tool."
+            }
         url = "https://fastball-gateway.mlb.com/graphql"
         headers = {
             "accept": "*/*",
