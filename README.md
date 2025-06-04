@@ -55,3 +55,5 @@ echo '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}' | python mcp_stdio_wr
 ---
 
 **Powered by [pybaseballstats](https://pypi.org/project/pybaseballstats/) and FastAPI**
+
+**Note:** The Fangraphs endpoints require internet access. If outbound requests are blocked, requests may fail with a `ProxyError`.
