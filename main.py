@@ -232,7 +232,7 @@ async def jsonrpc_endpoint(request: Request):
 
             print(f"[TOOLS_CALL_HANDLER] Derived tool_name: '{actual_tool_name}', derived_params: {actual_tool_params}") # Log derived params
 
-            if actual_tool_name in ["get_player_stats", "get_team_stats", "get_leaderboard"]:
+            if actual_tool_name in ["get_player_stats", "get_team_stats", "get_leaderboard", "mlb_video_search"]:
                 result = call_tool(actual_tool_name, actual_tool_params)
                 return {"jsonrpc": "2.0", "result": result, "id": rpc_id}
             else:
