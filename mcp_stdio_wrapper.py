@@ -30,60 +30,68 @@ def handle_rpc(method, params, rpc_id):
         if rpc_id is not None:
             rpc_id = int(rpc_id)
     except Exception:
-        pass
-    
-    sys.stderr.write(f"INFO: Handling method: {method} with params: {json.dumps(params)}\n")
-    
+        pass # Keep original rpc_id if coercion fails
+
+    start_time = time.time()
+    sys.stderr.write(f"INFO: [{rpc_id}] Handling method: {method} with params: {json.dumps(params)}\n")
+
     # Handle core MCP protocol methods directly in the wrapper for faster response
     if method == "exit":
-        sys.stderr.write("INFO: Received exit request, terminating\n")
+        sys.stderr.write(f"INFO: [{rpc_id}] Received exit request, terminating\n")
         sys.exit(0)
-    
-    # For all other methods, use the unified JSON-RPC endpoint
+
+    response_data = None
     try:
-        # Create a proper JSON-RPC request
         jsonrpc_request = {
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
             "id": rpc_id
         }
-        
-        # Special case for tools/list - try the lightweight endpoint first
+
         if method == "tools/list":
             try:
-                # First try the lightweight GET endpoint for faster response
+                sys.stderr.write(f"INFO: [{rpc_id}] Attempting GET {FASTAPI_URL}/tools\n")
+                t_get_start = time.time()
                 resp = requests.get(f"{FASTAPI_URL}/tools", timeout=3.0)
+                t_get_end = time.time()
+                sys.stderr.write(f"INFO: [{rpc_id}] GET /tools completed in {t_get_end - t_get_start:.4f}s, status: {resp.status_code}\n")
+                resp.raise_for_status() # Raise an exception for bad status codes
                 data = resp.json()
-                sys.stderr.write(f"INFO: Got tools list from /tools endpoint: {json.dumps(data)}\n")
-                return {"jsonrpc": "2.0", "result": data, "id": rpc_id}
+                sys.stderr.write(f"INFO: [{rpc_id}] Got tools list from /tools endpoint: {json.dumps(data)}\n")
+                response_data = {"jsonrpc": "2.0", "result": data, "id": rpc_id}
             except Exception as e:
-                sys.stderr.write(f"WARN: Failed to get tools from /tools, falling back to JSON-RPC: {str(e)}\n")
-                # Fall through to the JSON-RPC endpoint
+                sys.stderr.write(f"WARN: [{rpc_id}] Failed to get tools from /tools (took {time.time() - t_get_start:.4f}s if started), falling back to JSON-RPC: {str(e)}\n")
+                # Fall through to the JSON-RPC POST endpoint if response_data is still None
         
-        # Send the request to the unified JSON-RPC endpoint
-        sys.stderr.write(f"INFO: Sending to JSON-RPC endpoint: {json.dumps(jsonrpc_request)}\n")
-        resp = requests.post(f"{FASTAPI_URL}/jsonrpc", json=jsonrpc_request, timeout=5.0)
-        
-        # Process the response
-        if resp.status_code == 200:
-            return resp.json()
-        else:
-            sys.stderr.write(f"ERROR: JSON-RPC request failed with status {resp.status_code}: {resp.text}\n")
-            return {
-                "jsonrpc": "2.0",
-                "error": {"code": -32603, "message": f"HTTP error {resp.status_code}: {resp.text}"},
-                "id": rpc_id
-            }
+        if response_data is None: # If not tools/list or if GET /tools failed
+            sys.stderr.write(f"INFO: [{rpc_id}] Sending to JSON-RPC endpoint: {json.dumps(jsonrpc_request)}\n")
+            t_post_start = time.time()
+            resp = requests.post(f"{FASTAPI_URL}/jsonrpc", json=jsonrpc_request, timeout=5.0)
+            t_post_end = time.time()
+            sys.stderr.write(f"INFO: [{rpc_id}] POST /jsonrpc for method '{method}' completed in {t_post_end - t_post_start:.4f}s, status: {resp.status_code}\n")
+            
+            if resp.status_code == 200:
+                response_data = resp.json()
+            else:
+                sys.stderr.write(f"ERROR: [{rpc_id}] JSON-RPC request failed with status {resp.status_code}: {resp.text}\n")
+                response_data = {
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32603, "message": f"HTTP error {resp.status_code}: {resp.text}"},
+                    "id": rpc_id
+                }
+
     except Exception as e:
-        sys.stderr.write(f"ERROR: Exception in handle_rpc: {str(e)}\n")
-        return {
+        sys.stderr.write(f"ERROR: [{rpc_id}] Exception in handle_rpc: {str(e)}\n")
+        response_data = {
             "jsonrpc": "2.0",
             "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
             "id": rpc_id
         }
-    # This code is unreachable - all cases are handled above
-    # Keeping this comment as a placeholder
+    
+    end_time = time.time()
+    sys.stderr.write(f"INFO: [{rpc_id}] Total time for handle_rpc method '{method}': {end_time - start_time:.4f}s\n")
+    return response_data
 
 def main():
     for line in sys.stdin:
