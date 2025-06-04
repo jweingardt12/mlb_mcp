@@ -6,6 +6,8 @@ import asyncio
 import functools
 import time
 from fastapi.responses import JSONResponse
+import requests
+import json
 
 # Lazy imports - don't import pybaseballstats until needed
 # This prevents slow startup times that can cause timeouts
@@ -777,5 +779,69 @@ def mlb_play_video(play_id: int):
         return JSONResponse(content={"video": video_data})
     except ImportError:
         return JSONResponse(content={"error": "'MLB-StatsAPI' package not installed."}, status_code=500)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.get("/mlb/video_search")
+def mlb_video_search(
+    queries: str = Query(..., description="MLB Film Room query string, e.g. 'HitResult = [\"Home Run\"] AND PitchType = [\"CU\"] Order By PitchSpeed ASC'")
+):
+    try:
+        url = "https://fastball-gateway.mlb.com/graphql"
+        headers = {
+            "accept": "*/*",
+            "accept-language": "en-US,en;q=0.9",
+            "cache-control": "no-cache",
+            "dnt": "1",
+            "origin": "https://www.mlb.com",
+            "pragma": "no-cache",
+            "referer": "https://www.mlb.com/video/",
+            "user-agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+        }
+        query = """
+        query getQueryInfo($queries: [String], $queryType: QueryType = STRUCTURED, $includeCount: Boolean = false) {
+          queryInfo(queries: $queries, queryType: $queryType) {
+            query
+            valid
+            graph
+            count @include(if: $includeCount)
+            __typename
+          }
+        }
+        """
+        variables = {
+            "queryType": None,
+            "includeCount": False,
+            "queries": queries
+        }
+        params = {
+            "query": query,
+            "operationName": "getQueryInfo",
+            "variables": json.dumps(variables)
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        # Extract video URLs and titles from the response
+        videos = []
+        try:
+            query_info = data.get("data", {}).get("queryInfo", [])
+            for info in query_info:
+                # Traverse the 'graph' tree to find video nodes
+                def find_videos(node):
+                    results = []
+                    if not isinstance(node, dict):
+                        return results
+                    # MLB Film Room video nodes often have a 'url' or 'title' field
+                    if "url" in node and "title" in node:
+                        results.append({"title": node["title"], "url": node["url"]})
+                    # Recursively search children
+                    for child in node.get("children", []):
+                        results.extend(find_videos(child))
+                    return results
+                videos.extend(find_videos(info.get("graph", {})))
+        except Exception:
+            pass
+        return JSONResponse(content={"videos": videos})
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
