@@ -1513,14 +1513,20 @@ def statcast_leaderboard(
         return {"content": [], "error": str(e)}
 
 # --- FastAPI endpoint for statcast leaderboard ---
-@app.get("/statcast/leaderboard")
+@app.get(
+    "/statcast/leaderboard",
+    summary="Get Statcast event-level leaderboard",
+    description="Get event-level Statcast leaderboard for a date range, filtered by result (e.g., home run) and sorted by exit velocity, etc. Use this for event-level queries (e.g., hardest hit home runs in a month)."
+)
 def statcast_leaderboard_endpoint(
     start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
     end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
     limit: int = Query(10, description="Number of results to return"),
     min_ev: float = Query(None, description="Minimum exit velocity (optional)"),
-    result: str = Query(None, description="Filter by result type, e.g., 'Home Run' (optional)")
+    result: str = Query(None, description="Filter by result type, e.g., 'Home Run' (optional)"),
+    order: str = Query("desc", description="Sort order: 'asc' or 'desc' (optional, default desc)")
 ):
+    """Get Statcast event-level leaderboard for a date range, filtered by result and sorted by exit velocity."""
     return statcast_leaderboard(
         start_date=start_date,
         end_date=end_date,
