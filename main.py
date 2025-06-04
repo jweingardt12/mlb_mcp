@@ -149,7 +149,9 @@ STATIC_TOOLS = [
                 "date": {"type": "string", "description": "Date to filter leaderboard", "format": "YYYY-MM-DD", "default": None},
                 "week": {"type": "integer", "description": "Week to filter leaderboard", "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53], "default": None},
                 "start_date": {"type": "string", "description": "Start date in YYYY-MM-DD format", "format": "YYYY-MM-DD", "default": None},
-                "end_date": {"type": "string", "description": "End date in YYYY-MM-DD format", "format": "YYYY-MM-DD", "default": None}
+                "end_date": {"type": "string", "description": "End date in YYYY-MM-DD format", "format": "YYYY-MM-DD", "default": None},
+                "result": {"type": "string", "description": "Filter by result type, e.g., 'Home Run' (optional)"},
+                "order": {"type": "string", "description": "Sort order: 'asc' or 'desc' (optional, default desc)"}
             },
             "required": ["stat", "season"]
         }
@@ -478,7 +480,9 @@ def get_leaderboard(
     date: str = None,
     week: int = None,
     start_date: str = None,
-    end_date: str = None
+    end_date: str = None,
+    result: str = Query(None, description="Filter by result type, e.g., 'Home Run' (optional)"),
+    order: str = Query("desc", description="Sort order: 'asc' or 'desc' (optional, default desc)")
 ):
     """
     Get leaderboard for a given stat and season. Type can be 'batting' or 'pitching'.
@@ -488,6 +492,8 @@ def get_leaderboard(
       - date (YYYY-MM-DD)
       - week (1-53)
       - start_date, end_date (YYYY-MM-DD)
+      - result (e.g., 'Home Run')
+      - order ('asc' or 'desc')
     If possible, includes a video resource for each leaderboard row.
     """
     current_year = datetime.now().year
@@ -662,6 +668,39 @@ def get_leaderboard(
         # Add more as needed
     }
 
+    # --- Helper function for filtering leaderboard DataFrames ---
+    def apply_leaderboard_filters(df, month=None, day=None, week=None, date=None, start_date=None, end_date=None, result=None):
+        # Apply time filters if columns exist
+        if month is not None and "Month" in df.columns:
+            df = df[df["Month"] == month]
+        if day is not None and "Day" in df.columns:
+            df = df[df["Day"] == day]
+        if week is not None and "Week" in df.columns:
+            df = df[df["Week"] == week]
+        if date is not None and "Date" in df.columns:
+            df = df[df["Date"] == date]
+        if start_date is not None and end_date is not None and "Date" in df.columns:
+            df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
+        # Apply result filter if present
+        if result is not None:
+            # Try to match in common result columns
+            result_cols = [col for col in ["Result", "HitResult", "HR", "events"] if col in df.columns]
+            if result_cols:
+                col = result_cols[0]
+                # Case-insensitive match for string columns
+                if df[col].dtype == object:
+                    df = df[df[col].astype(str).str.lower() == result.lower()]
+                else:
+                    # Try to map result string to code if possible
+                    code = None
+                    for k, v in RESULT_CODE_MAP.items():
+                        if v.lower() == result.lower():
+                            code = k
+                            break
+                    if code is not None:
+                        df = df[df[col] == code]
+        return df
+
     try:
         pb = load_pybaseball()
         if pb is None:
@@ -706,7 +745,13 @@ def get_leaderboard(
                 column_name = norm_col_map.get(stat_norm, stat)
             if column_name not in leaderboard.columns:
                 return {"content": [], "error": f"Stat '{stat}' (mapped to '{column_name}') not found. Available columns: {leaderboard.columns.tolist()}"}
-            sorted_leaderboard = leaderboard.sort_values(by=column_name, ascending=False).reset_index(drop=True)
+            # --- Apply all filters before sorting ---
+            leaderboard = apply_leaderboard_filters(
+                leaderboard, month=month, day=day, week=week, date=date, start_date=start_date, end_date=end_date, result=result
+            )
+            # --- Sort by requested stat and order ---
+            ascending = order == "asc"
+            sorted_leaderboard = leaderboard.sort_values(by=column_name, ascending=ascending).reset_index(drop=True)
             name_columns = [col for col in sorted_leaderboard.columns if col.lower() in ["name", "player", "player_name"]]
             if name_columns:
                 sorted_leaderboard = sorted_leaderboard.rename(columns={name_columns[0]: "Name"})
@@ -724,16 +769,6 @@ def get_leaderboard(
                     value = row.get(column_name, "N/A")
                     lines.append(f"{i+1}. Name: {name}, Team: {team}, {column_name}: {value}")
                 return {"content": [{"type": "text", "text": "\n".join(lines)}]}
-            if month is not None and "Month" in leaderboard.columns:
-                leaderboard = leaderboard[leaderboard["Month"] == month]
-            if day is not None and "Day" in leaderboard.columns:
-                leaderboard = leaderboard[leaderboard["Day"] == day]
-            if week is not None and "Week" in leaderboard.columns:
-                leaderboard = leaderboard[leaderboard["Week"] == week]
-            if date is not None and "Date" in leaderboard.columns:
-                leaderboard = leaderboard[leaderboard["Date"] == date]
-            if start_date is not None and end_date is not None and "Date" in leaderboard.columns:
-                leaderboard = leaderboard[(leaderboard["Date"] >= start_date) & (leaderboard["Date"] <= end_date)]
             # Attach video to each record if possible
             for row in records:
                 row["video"] = find_video_for_row(row, date)
@@ -799,7 +834,13 @@ def get_leaderboard(
                 column_name = norm_col_map.get(stat_norm, stat)
             if column_name not in df.columns:
                 return {"content": [], "error": f"Stat '{stat}' (mapped to '{column_name}') not found. Available columns: {df.columns.tolist()}`"}
-            sorted_df = df.sort_values(by=column_name, ascending=False).reset_index(drop=True)
+            # --- Apply all filters before sorting ---
+            df = apply_leaderboard_filters(
+                df, month=month, day=day, week=week, date=date, start_date=start_date, end_date=end_date, result=result
+            )
+            # --- Sort by requested stat and order ---
+            ascending = order == "asc"
+            sorted_df = df.sort_values(by=column_name, ascending=ascending).reset_index(drop=True)
             name_columns = [col for col in sorted_df.columns if col.lower() in ["name", "player", "player_name"]]
             if name_columns:
                 sorted_df = sorted_df.rename(columns={name_columns[0]: "Name"})
@@ -817,16 +858,6 @@ def get_leaderboard(
                     value = row.get(column_name, "N/A")
                     lines.append(f"{i+1}. Name: {name}, Team: {team}, {column_name}: {value}")
                 return {"content": [{"type": "text", "text": "\n".join(lines)}]}
-            if month is not None and "Month" in df.columns:
-                df = df[df["Month"] == month]
-            if day is not None and "Day" in df.columns:
-                df = df[df["Day"] == day]
-            if week is not None and "Week" in df.columns:
-                df = df[df["Week"] == week]
-            if date is not None and "Date" in df.columns:
-                df = df[df["Date"] == date]
-            if start_date is not None and end_date is not None and "Date" in df.columns:
-                df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)]
             # Attach video to each record if possible
             for row in records:
                 row["video"] = find_video_for_row(row, date)
@@ -1488,7 +1519,7 @@ def statcast_leaderboard_endpoint(
     end_date: str = Query(..., description="End date in YYYY-MM-DD format"),
     limit: int = Query(10, description="Number of results to return"),
     min_ev: float = Query(None, description="Minimum exit velocity (optional)"),
-    result: str = Query(None, description="Filter by result type, e.g., 'home_run' (optional)")
+    result: str = Query(None, description="Filter by result type, e.g., 'Home Run' (optional)")
 ):
     return statcast_leaderboard(
         start_date=start_date,
