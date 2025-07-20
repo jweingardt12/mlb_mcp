@@ -5,4 +5,4 @@ requests==2.32.4
 pyyaml==6.0.2
 # Additional dependencies that might be needed
 python-multipart==0.0.16
-httpx==0.29.0
+httpx==0.28.1
