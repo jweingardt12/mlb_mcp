@@ -223,11 +223,25 @@ async def tools_list_get():
     return {"protocolVersion": "2025-03-26", "tools": STATIC_TOOLS}
 
 @app.get("/mcp")
-async def mcp_get_handler():
+async def mcp_get_handler(request: Request):
     """Handles GET requests to the /mcp endpoint, primarily for tool discovery."""
     # Smithery's technical requirements state /mcp must handle GET.
+    # Configuration can be passed via query parameters using dot-notation
+    # Example: /mcp?server.host=localhost&server.port=8080&apiKey=secret123
+    
+    # Parse query parameters if needed for configuration
+    query_params = dict(request.query_params)
+    # Currently, this server doesn't require configuration, but we accept the parameters
+    
     # Returning the tools list here provides another discovery mechanism.
     return {"protocolVersion": "2025-03-26", "tools": STATIC_TOOLS}
+
+@app.delete("/mcp")
+async def mcp_delete_handler():
+    """Handles DELETE requests to the /mcp endpoint for session cleanup."""
+    # Smithery's technical requirements state /mcp must handle DELETE.
+    # Return a simple acknowledgment for session cleanup.
+    return {"status": "ok", "message": "Session cleaned up"}
 
 @app.post("/mcp")
 async def jsonrpc_endpoint(request: Request):

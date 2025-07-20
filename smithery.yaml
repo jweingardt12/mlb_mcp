@@ -93,11 +93,21 @@ tools:
         - end_date
 
 runtime: container
-# The command to start the server (e.g., Uvicorn) is defined in the Dockerfile's CMD.
-# Smithery will expect the server to listen on the $PORT environment variable.
+
+# Build configuration
+build:
+  dockerfile: "Dockerfile"
+  dockerBuildPath: "."
+
+# Start command configuration for HTTP transport
 startCommand:
   type: "http"
   configSchema:
     type: "object"
-    properties: {}  # No specific configuration properties required by this MCP server.
-  exampleConfig: {}   # No example config needed as there are no properties.
+    properties: {}
+    required: []
+  exampleConfig: {}
+
+# Environment variables
+env:
+  PYTHONUNBUFFERED: "1"
