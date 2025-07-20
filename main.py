@@ -5,6 +5,7 @@ import importlib
 import asyncio
 import functools
 import time
+import os
 from fastapi.responses import JSONResponse
 import pandas as pd
 import requests
@@ -24,10 +25,36 @@ app = FastAPI(
     redoc_url=None
 )
 
-# Simple health check endpoint
+@app.on_event("startup")
+async def startup_event():
+    """Initialize logging and prepare for optimal performance"""
+    import logging
+    logger = logging.getLogger("uvicorn")
+    logger.info("MLB Stats MCP server starting up...")
+    # Pre-warm any necessary components here if needed
+
+# Health check endpoint
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "MLB Stats MCP server is running"}
+    return {
+        "status": "ok", 
+        "message": "MLB Stats MCP server is running",
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/health")
+def health_check():
+    """Detailed health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "MLB Stats MCP",
+        "timestamp": datetime.now().isoformat(),
+        "uptime": time.time(),
+        "dependencies": {
+            "pybaseball_loaded": pybaseball is not None
+        }
+    }
 
 # Lazy loading helper function
 def load_pybaseball():
