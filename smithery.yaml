@@ -100,7 +100,17 @@ server:
     path: /health
     interval: 30s
     timeout: 10s
+    initialDelaySeconds: 10
   
+# Resource limits for Smithery deployment
+resources:
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+
 # The command to start the server is defined in the Dockerfile's CMD.
 # Smithery will expect the server to listen on the $PORT environment variable.
 startCommand:
