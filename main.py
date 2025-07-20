@@ -241,16 +241,60 @@ async def tools_list_get():
     return {"protocolVersion": "2025-03-26", "tools": STATIC_TOOLS}
 
 @app.get("/mcp")
-async def mcp_get_handler():
+async def mcp_get_handler(request: Request):
     """Handles GET requests to the /mcp endpoint, primarily for tool discovery."""
     # Smithery's technical requirements state /mcp must handle GET.
     # Returning the tools list here provides another discovery mechanism.
+    # Support configuration via query parameters (e.g., /mcp?apiKey=xxx&server.host=localhost)
+    config = {}
+    for key, value in request.query_params.items():
+        # Handle dot notation (e.g., server.host -> {"server": {"host": "localhost"}})
+        keys = key.split('.')
+        current = config
+        for k in keys[:-1]:
+            if k not in current:
+                current[k] = {}
+            current = current[k]
+        current[keys[-1]] = value
+    
+    # Store config if needed (for now, we don't use it)
+    # Could be used for API keys or other configuration in the future
+    
     return {"protocolVersion": "2025-03-26", "tools": STATIC_TOOLS}
+
+@app.delete("/mcp")
+async def mcp_delete_handler(request: Request):
+    """Handles DELETE requests to the /mcp endpoint."""
+    # According to Smithery docs, /mcp must handle DELETE requests
+    # This could be used for cleanup or session termination
+    # Support configuration via query parameters
+    config = {}
+    for key, value in request.query_params.items():
+        keys = key.split('.')
+        current = config
+        for k in keys[:-1]:
+            if k not in current:
+                current[k] = {}
+            current = current[k]
+        current[keys[-1]] = value
+    
+    return {"status": "ok", "message": "Session terminated"}
 
 @app.post("/mcp")
 async def jsonrpc_endpoint(request: Request):
     """Generic JSON-RPC endpoint for all MCP operations"""
     try:
+        # Support configuration via query parameters
+        config = {}
+        for key, value in request.query_params.items():
+            keys = key.split('.')
+            current = config
+            for k in keys[:-1]:
+                if k not in current:
+                    current[k] = {}
+                current = current[k]
+            current[keys[-1]] = value
+        
         data = await request.json()
         method = data.get("method")
         params = data.get("params", {})
