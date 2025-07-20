@@ -7,9 +7,6 @@ import functools
 import time
 import os
 from fastapi.responses import JSONResponse
-import pandas as pd
-import requests
-import numpy as np
 import traceback
 
 # Lazy imports - don't import pybaseballstats until needed
@@ -593,6 +590,7 @@ def get_leaderboard(
                     if month == 12:
                         end = f"{season}-12-31"
                     else:
+                        import pandas as pd
                         end = (datetime(season, month+1, 1) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
                 else:
                     # Fallback to season
@@ -823,6 +821,8 @@ def get_leaderboard(
                 sorted_leaderboard = sorted_leaderboard.rename(columns={name_columns[0]: "Name"})
             else:
                 sorted_leaderboard["Name"] = None
+            import numpy as np
+            import pandas as pd
             sorted_leaderboard = sorted_leaderboard.replace([np.inf, -np.inf, float('inf'), float('-inf')], np.nan)
             sorted_leaderboard = sorted_leaderboard.where(pd.notnull(sorted_leaderboard), None)
             sorted_leaderboard = sorted_leaderboard.applymap(safe_json)
@@ -912,6 +912,8 @@ def get_leaderboard(
                 sorted_df = sorted_df.rename(columns={name_columns[0]: "Name"})
             else:
                 sorted_df["Name"] = None
+            import numpy as np
+            import pandas as pd
             sorted_df = sorted_df.replace([np.inf, -np.inf, float('inf'), float('-inf')], np.nan)
             sorted_df = sorted_df.where(pd.notnull(sorted_df), None)
             sorted_df = sorted_df.applymap(safe_json)
@@ -1003,6 +1005,7 @@ def find_video_for_row(row, default_date=None):
 
     for video_query in attempts:
         try:
+            import requests
             resp = requests.post(
                 "http://localhost:8000/mlb/video_search",
                 json={"query": video_query, "limit": 1}
@@ -1370,6 +1373,7 @@ async def mlb_video_search(request: Request):
                 "contentPreference": "MIXED"
             }
         }
+        import requests
         response = requests.post(url, headers=headers, json=body)
         response.raise_for_status()
         raw = response.json()
@@ -1438,7 +1442,8 @@ async def mlb_video_search(request: Request):
 def safe_json(val):
     try:
         if isinstance(val, float):
-            if not np.isfinite(val):
+            import numpy as np
+        if not np.isfinite(val):
                 return None
         return val
     except Exception:
@@ -1446,6 +1451,7 @@ def safe_json(val):
 
 def sanitize_json(obj):
     if isinstance(obj, float):
+        import numpy as np
         if not np.isfinite(obj):
             return None
         return obj
@@ -1550,6 +1556,7 @@ def statcast_leaderboard(
                 video_query_parts.append(f'HitDistance >= {rec["hit_distance"] - 2} AND HitDistance <= {rec["hit_distance"] + 2}')
             video_query = ' AND '.join(video_query_parts)
             try:
+                import requests
                 resp = requests.post(
                     "http://localhost:8000/mlb/video_search",
                     json={"query": video_query, "limit": 1}
