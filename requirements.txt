@@ -1,5 +1,8 @@
-fastapi
-uvicorn
-pybaseballstats
-requests
-pyyaml
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+pybaseballstats==0.3.11
+requests==2.32.4
+pyyaml==6.0.2
+# Additional dependencies that might be needed
+python-multipart==0.0.16
+httpx==0.29.0
