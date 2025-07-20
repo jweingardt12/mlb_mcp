@@ -29,9 +29,30 @@ app = FastAPI(
 async def startup_event():
     """Initialize logging and prepare for optimal performance"""
     import logging
+    import sys
     logger = logging.getLogger("uvicorn")
     logger.info("MLB Stats MCP server starting up...")
-    # Pre-warm any necessary components here if needed
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"PORT environment variable: {os.environ.get('PORT', 'Not set')}")
+    
+    # Test that we can import pybaseballstats without issues
+    try:
+        test_pb = load_pybaseball()
+        if test_pb:
+            logger.info(f"Successfully loaded baseball library: {getattr(test_pb, '_source', 'unknown')}")
+        else:
+            logger.warning("Failed to load pybaseballstats or pybaseball")
+    except Exception as e:
+        logger.error(f"Error during startup pybaseball test: {str(e)}")
+    
+    logger.info("Startup complete")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean shutdown"""
+    import logging
+    logger = logging.getLogger("uvicorn")
+    logger.info("MLB Stats MCP server shutting down...")
 
 # Health check endpoint
 @app.get("/")

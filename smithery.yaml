@@ -93,7 +93,15 @@ tools:
         - end_date
 
 runtime: container
-# The command to start the server (e.g., Uvicorn) is defined in the Dockerfile's CMD.
+
+# Server configuration
+server:
+  healthcheck:
+    path: /health
+    interval: 30s
+    timeout: 10s
+  
+# The command to start the server is defined in the Dockerfile's CMD.
 # Smithery will expect the server to listen on the $PORT environment variable.
 startCommand:
   type: "http"
