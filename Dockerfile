@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Smithery-compatible MCP server
-FROM python:3.11-slim-bookworm as builder
+FROM python:3.11-slim-bookworm AS builder
 
 # Install build tools and libraries needed for packages like pandas and lxml
 RUN apt-get update && \
