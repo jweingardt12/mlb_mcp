@@ -23,11 +23,13 @@ def load_pybaseball():
             import pybaseballstats as pb
             pybaseball = pb
             logger.info("Successfully loaded pybaseballstats")
+            logger.info(f"Available functions: {[attr for attr in dir(pb) if not attr.startswith('_')]}")
         except ImportError:
             try:
                 import pybaseball as pb
                 pybaseball = pb
                 logger.info("Successfully loaded pybaseball")
+                logger.info(f"Available functions: {[attr for attr in dir(pb) if not attr.startswith('_')]}")
             except ImportError:
                 logger.error("Could not import pybaseballstats or pybaseball")
                 raise
@@ -49,8 +51,13 @@ async def get_player_stats(name: str, start_date: Optional[str] = None, end_date
     try:
         pb = load_pybaseball()
         
+        # Import functions from pybaseball
+        from pybaseball import playerid_lookup, statcast_batter
+        
         # Search for player
-        results = pb.playerid_lookup(name.split()[-1], name.split()[0] if len(name.split()) > 1 else '')
+        last_name = name.split()[-1]
+        first_name = name.split()[0] if len(name.split()) > 1 else ''
+        results = playerid_lookup(last_name, first_name)
         if results.empty:
             return f"No player found matching '{name}'"
         
@@ -59,12 +66,12 @@ async def get_player_stats(name: str, start_date: Optional[str] = None, end_date
         # Get statcast data
         import pandas as pd
         if start_date and end_date:
-            data = pb.statcast_batter(start_date, end_date, player_id)
+            data = statcast_batter(start_date, end_date, player_id)
         else:
             # Default to current season
             from datetime import datetime
             current_year = datetime.now().year
-            data = pb.statcast_batter(f"{current_year}-04-01", f"{current_year}-10-01", player_id)
+            data = statcast_batter(f"{current_year}-04-01", f"{current_year}-10-01", player_id)
         
         if data.empty:
             return f"No statcast data found for {name}"
@@ -105,11 +112,14 @@ async def get_team_stats(team: str, year: int, stat_type: str = "batting") -> st
     try:
         pb = load_pybaseball()
         
+        # Import functions from pybaseball
+        from pybaseball import team_batting, team_pitching
+        
         # Get team stats
         if stat_type.lower() == "batting":
-            data = pb.team_batting(year)
+            data = team_batting(year)
         elif stat_type.lower() == "pitching":
-            data = pb.team_pitching(year)
+            data = team_pitching(year)
         else:
             return f"Invalid stat_type: {stat_type}. Use 'batting' or 'pitching'"
         
@@ -154,11 +164,14 @@ async def get_leaderboard(stat: str, season: int, leaderboard_type: str = "batti
     try:
         pb = load_pybaseball()
         
+        # Import functions from pybaseball
+        from pybaseball import batting_stats, pitching_stats
+        
         # Get the appropriate leaderboard
         if leaderboard_type.lower() == "batting":
-            data = pb.batting_stats(season)
+            data = batting_stats(season)
         elif leaderboard_type.lower() == "pitching":
-            data = pb.pitching_stats(season)
+            data = pitching_stats(season)
         else:
             return f"Invalid leaderboard_type: {leaderboard_type}. Use 'batting' or 'pitching'"
         
@@ -214,8 +227,11 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
     try:
         pb = load_pybaseball()
         
+        # Import statcast function from pybaseball
+        from pybaseball import statcast
+        
         # Get statcast data for date range
-        data = pb.statcast(start_dt=start_date, end_dt=end_date)
+        data = statcast(start_dt=start_date, end_dt=end_date)
         
         if data.empty:
             return f"No statcast data found for date range {start_date} to {end_date}"
