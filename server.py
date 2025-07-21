@@ -210,7 +210,7 @@ async def get_player_stats(name: str, start_date: Optional[str] = None, end_date
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def get_team_stats(team: str, year: int, stat_type: str = "batting") -> str:
+async def get_team_stats(team: str, year: Any, stat_type: str = "batting") -> str:
     """
     Get team stats for a given team and year. Type can be 'batting' or 'pitching'
     
@@ -223,6 +223,9 @@ async def get_team_stats(team: str, year: int, stat_type: str = "batting") -> st
         JSON string of team statistics
     """
     try:
+        # Convert string inputs to proper types
+        year = int(year)
+        
         pb = load_pybaseball()
         
         # Import functions from pybaseball
@@ -322,7 +325,7 @@ async def get_team_stats(team: str, year: int, stat_type: str = "batting") -> st
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def get_leaderboard(stat: str, season: int, leaderboard_type: str = "batting", limit: int = 10) -> str:
+async def get_leaderboard(stat: str, season: Any, leaderboard_type: str = "batting", limit: Any = 10) -> str:
     """
     Get leaderboard for a given stat and season
     
@@ -336,6 +339,10 @@ async def get_leaderboard(stat: str, season: int, leaderboard_type: str = "batti
         JSON string of leaderboard data
     """
     try:
+        # Convert string inputs to proper types
+        season = int(season)
+        limit = int(limit)
+        
         pb = load_pybaseball()
         
         # Import functions from pybaseball
@@ -381,7 +388,7 @@ async def get_leaderboard(stat: str, season: int, leaderboard_type: str = "batti
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def team_season_stats(year: int, stat: str = "exit_velocity", min_result_type: Optional[str] = None) -> str:
+async def team_season_stats(year: Any, stat: str = "exit_velocity", min_result_type: Optional[str] = None) -> str:
     """
     Get team season averages for Statcast metrics. Optimized for fast team comparisons.
     
@@ -395,6 +402,9 @@ async def team_season_stats(year: int, stat: str = "exit_velocity", min_result_t
         JSON string of team rankings by selected metric
     """
     try:
+        # Convert string inputs to proper types
+        year = int(year)
+        
         # Special cache for season-wide team stats (24-hour TTL)
         cache_key = f"team_season_{year}_{stat}_{min_result_type}"
         
@@ -538,7 +548,7 @@ async def team_season_stats(year: int, stat: str = "exit_velocity", min_result_t
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def team_pitching_stats(year: int, stat: str = "velocity", pitch_type: Optional[str] = None) -> str:
+async def team_pitching_stats(year: Any, stat: str = "velocity", pitch_type: Optional[str] = None) -> str:
     """
     Get team pitching averages for Statcast metrics. Optimized for fast team pitching comparisons.
     
@@ -553,6 +563,9 @@ async def team_pitching_stats(year: int, stat: str = "velocity", pitch_type: Opt
         JSON string of team pitching rankings by selected metric
     """
     try:
+        # Convert string inputs to proper types
+        year = int(year)
+        
         # Special cache for season-wide pitching stats (24-hour TTL)
         cache_key = f"team_pitching_{year}_{stat}_{pitch_type}"
         
@@ -729,8 +742,8 @@ async def team_pitching_stats(year: int, stat: str = "velocity", pitch_type: Opt
 
 @mcp.tool()
 async def statcast_count(start_date: str, end_date: str, result_type: str = "home_run", 
-                        min_distance: Optional[float] = None, min_exit_velocity: Optional[float] = None,
-                        max_distance: Optional[float] = None, max_exit_velocity: Optional[float] = None) -> str:
+                        min_distance: Optional[Any] = None, min_exit_velocity: Optional[Any] = None,
+                        max_distance: Optional[Any] = None, max_exit_velocity: Optional[Any] = None) -> str:
     """
     Count Statcast events matching criteria. Optimized for multi-year queries like "how many 475+ ft home runs since 2023?"
     
@@ -747,6 +760,16 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
         JSON with count, breakdown by year, and top examples
     """
     try:
+        # Convert string inputs to proper types
+        if min_distance is not None:
+            min_distance = float(min_distance)
+        if max_distance is not None:
+            max_distance = float(max_distance)
+        if min_exit_velocity is not None:
+            min_exit_velocity = float(min_exit_velocity)
+        if max_exit_velocity is not None:
+            max_exit_velocity = float(max_exit_velocity)
+        
         # Special cache for counting queries (24-hour TTL)
         cache_key = f"count_{start_date}_{end_date}_{result_type}_{min_distance}_{min_exit_velocity}_{max_distance}_{max_exit_velocity}"
         
@@ -891,8 +914,8 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
         return json.dumps({"error": str(e)})
 
 @mcp.tool()
-async def top_home_runs(year_start: int = 2023, year_end: Optional[int] = None, 
-                        limit: int = 5, min_exit_velocity: Optional[float] = None) -> str:
+async def top_home_runs(year_start: Any = 2023, year_end: Optional[Any] = None, 
+                        limit: Any = 5, min_exit_velocity: Optional[Any] = None) -> str:
     """
     Get top home runs by exit velocity for a given year range. Optimized for performance.
     
@@ -906,6 +929,14 @@ async def top_home_runs(year_start: int = 2023, year_end: Optional[int] = None,
         JSON string of top home runs
     """
     try:
+        # Convert string inputs to proper types
+        year_start = int(year_start)
+        if year_end is not None:
+            year_end = int(year_end)
+        limit = int(limit)
+        if min_exit_velocity is not None:
+            min_exit_velocity = float(min_exit_velocity)
+            
         if year_end is None:
             year_end = datetime.now().year
             
