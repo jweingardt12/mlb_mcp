@@ -43,21 +43,46 @@ Query advanced Statcast data with filtering, sorting, and video highlight links.
   - `result` (optional): Filter by outcome (e.g., "home_run", "single", "double")
   - `min_ev` (optional): Minimum exit velocity filter
   - `min_pitch_velo` (optional): Minimum pitch velocity filter
-  - `sort_by` (optional): Sort metric - "exit_velocity" (default), "distance", or "launch_angle"
+  - `sort_by` (optional): Sort metric:
+    - `"exit_velocity"` (default) - Hardest hit balls
+    - `"distance"` - Longest hits
+    - `"launch_angle"` - Optimal launch angles
+    - `"pitch_velocity"` - Fastest pitches
+    - `"spin_rate"` - Highest spin rates
+    - `"xba"` - Highest expected batting average
+    - `"xwoba"` - Highest expected weighted on-base average
+    - `"barrel"` - Barrel rate (perfect contact)
   - `limit` (optional): Number of results (default: 10)
   - `order` (optional): Sort order - "desc" (default) or "asc"
-- **Returns:** Detailed play-by-play data with video links
+  - `group_by` (optional): Group results by "team" for team-wide rankings
+- **Returns:** Detailed play-by-play data with video links (or team aggregations when group_by="team")
 
 ### 🎥 Video Highlights Integration
 
-Every result from `statcast_leaderboard` includes multiple video access points:
+Every result from `statcast_leaderboard` includes detailed metrics and video access points:
 
 ```json
-"video_links": {
-  "game_highlights_url": "https://www.mlb.com/gameday/745890/video",
-  "film_room_search": "https://www.mlb.com/video/search?q=Ronald+Acuna+Jr.+2024-07-20",
-  "game_pk": "745890",
-  "api_highlights_endpoint": "https://statsapi.mlb.com/api/v1/schedule?gamePk=745890&hydrate=game(content(highlights(highlights)))"
+{
+  "rank": 1,
+  "player": "Ronald Acuña Jr.",
+  "date": "2024-07-20",
+  "exit_velocity": 113.7,
+  "launch_angle": 23.0,
+  "distance": 456.0,
+  "result": "home_run",
+  "pitch_velocity": 95.2,
+  "pitch_type": "FF",
+  "spin_rate": 2450,
+  "xba": 0.920,
+  "xwoba": 1.823,
+  "barrel": true,
+  "description": "Ronald Acuña Jr. homers (13) on a fly ball to center field.",
+  "video_links": {
+    "game_highlights_url": "https://www.mlb.com/gameday/745890/video",
+    "film_room_search": "https://www.mlb.com/video/search?q=Ronald+Acuna+Jr.+2024-07-20",
+    "game_pk": "745890",
+    "api_highlights_endpoint": "https://statsapi.mlb.com/api/v1/schedule?gamePk=745890&hydrate=game(content(highlights(highlights)))"
+  }
 }
 ```
 
@@ -68,6 +93,14 @@ The server intelligently handles team names:
 - Cities: "Boston" → "BOS", "New York Yankees" → "NYY"
 - Historical teams: "Expos" → "MON", "Indians" → "CLE"
 - All 30 current MLB teams supported with common variations
+
+### 📊 Team-Wide Rankings
+
+New team aggregation feature for `statcast_leaderboard`:
+- Group results by team to see team-wide performance
+- Calculates averages, maximums, and counts for each metric
+- Perfect for questions like "Which team hits the hardest home runs?"
+- Returns comprehensive team statistics including barrel counts and expected metrics
 
 ## Installation
 
@@ -121,6 +154,24 @@ Query: "What were the hardest hit balls on 99+ mph pitches last week?"
 Tool: statcast_leaderboard("2024-07-14", "2024-07-20", None, 0, 99.0, "exit_velocity", 10)
 ```
 
+### Fastest Pitches Thrown
+```
+Query: "Show me the fastest pitches thrown yesterday"
+Tool: statcast_leaderboard("2024-07-20", "2024-07-20", None, None, None, "pitch_velocity", 10)
+```
+
+### Highest Spin Rate Pitches
+```
+Query: "What pitches had the highest spin rate today?"
+Tool: statcast_leaderboard("2024-07-20", "2024-07-20", None, None, None, "spin_rate", 10)
+```
+
+### Best Quality Contact (Barrels)
+```
+Query: "Show me the best quality contact this week"
+Tool: statcast_leaderboard("2024-07-14", "2024-07-20", None, None, None, "barrel", 10)
+```
+
 ### Player Season Stats
 ```
 Query: "Get Mike Trout's stats for this season"
@@ -139,6 +190,22 @@ Query: "Who's leading the league in home runs?"
 Tool: get_leaderboard("HR", 2024, "batting", 10)
 ```
 
+### Team-Wide Rankings
+```
+Query: "Which team has the hardest hit home runs this season?"
+Tool: statcast_leaderboard("2024-04-01", "2024-10-01", "home_run", None, None, "exit_velocity", 10, "desc", "team")
+```
+
+```
+Query: "Show me teams with the longest average home run distance this month"
+Tool: statcast_leaderboard("2024-07-01", "2024-07-31", "home_run", None, None, "distance", 10, "desc", "team")
+```
+
+```
+Query: "Which teams have the highest average pitch velocity?"
+Tool: statcast_leaderboard("2024-07-20", "2024-07-20", None, None, None, "pitch_velocity", 10, "desc", "team")
+```
+
 ## Technical Details
 
 ### Architecture
@@ -148,11 +215,18 @@ Tool: get_leaderboard("HR", 2024, "batting", 10)
 - **Language**: Python 3.11+
 - **Deployment**: Docker container via Smithery
 
+### Performance Optimizations
+- **Query Chunking**: Automatically splits large date ranges into 5-day chunks to handle Baseball Savant's 30,000 row limit
+- **Response Caching**: 15-minute cache for repeated queries reduces API calls and improves response times
+- **Vectorized Operations**: Uses NumPy for efficient team identification instead of slower pandas apply() operations
+- **Lazy Loading**: Heavy dependencies (pandas, numpy, pybaseball) loaded only when needed for fast startup
+- **Efficient Filtering**: Applies filters sequentially to minimize data processing overhead
+
 ### Key Features
-- **Lazy Loading**: Heavy dependencies loaded only when needed for fast startup
 - **Error Handling**: Comprehensive error messages for common issues
 - **Type Safety**: Proper type conversion for JSON serialization
-- **Performance**: Optimized for quick responses with data caching
+- **Video Integration**: Automatic video highlight links for all plays and team top performances
+- **Smart Team Lookup**: Handles full names, abbreviations, cities, and historical teams
 
 ### File Structure
 ```
