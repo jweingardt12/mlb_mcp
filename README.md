@@ -1,6 +1,6 @@
 # MLB Stats MCP Server
 
-A Model Context Protocol (MCP) server that provides MLB baseball statistics through the [pybaseballstats](https://pypi.org/project/pybaseballstats/) library.
+A Model Context Protocol (MCP) server that provides MLB baseball statistics through the [pybaseball](https://github.com/jldbc/pybaseball) library.
 
 ## Features
 
@@ -15,8 +15,8 @@ This server exposes 4 tools for accessing MLB data:
 3. **get_leaderboard** - Get statistical leaderboards (HR, AVG, ERA, etc.)
    - Parameters: `stat` (required), `season` (required), `leaderboard_type` (optional), `limit` (optional)
    
-4. **statcast_leaderboard** - Get event-level Statcast data filtered by exit velocity, result type, etc.
-   - Parameters: `start_date` (required), `end_date` (required), `result`, `min_ev`, `limit`, `order` (optional)
+4. **statcast_leaderboard** - Get event-level Statcast data filtered by exit velocity, pitch velocity, result type, etc.
+   - Parameters: `start_date` (required), `end_date` (required), `result`, `min_ev`, `min_pitch_velo`, `limit`, `order` (optional)
 
 ## Deployment
 
@@ -30,8 +30,8 @@ The server uses the Model Context Protocol with stdio transport. See `smithery.y
 
 - Python 3.11+
 - fastmcp library for MCP protocol support
-- pybaseballstats for MLB data access
-- pandas, numpy (installed automatically as dependencies)
+- pybaseball for MLB data access
+- pandas, numpy, and other dependencies (installed automatically)
 
 ## Installation
 
@@ -61,7 +61,10 @@ get_team_stats("NYY", 2024, "batting")
 get_leaderboard("HR", 2024, "batting", 10)
 
 # Get hardest hit balls in July 2024
-statcast_leaderboard("2024-07-01", "2024-07-31", "home_run", 95.0, 10)
+statcast_leaderboard("2024-07-01", "2024-07-31", "home_run", 95.0, None, 10)
+
+# Get hardest hit balls on 99+ mph pitches
+statcast_leaderboard("2024-07-01", "2024-07-31", None, 0, 99.0, 10)
 ```
 
 ## Architecture
@@ -75,4 +78,4 @@ The server uses lazy loading for heavy dependencies (pandas, numpy) to ensure fa
 
 ---
 
-**Powered by [pybaseballstats](https://pypi.org/project/pybaseballstats/) and [fastmcp](https://github.com/jlowin/fastmcp)**
+**Powered by [pybaseball](https://github.com/jldbc/pybaseball) and [fastmcp](https://github.com/jlowin/fastmcp)**
