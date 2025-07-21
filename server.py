@@ -267,7 +267,8 @@ async def get_leaderboard(stat: str, season: int, leaderboard_type: str = "batti
 @mcp.tool()
 async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None, 
                              min_ev: Optional[float] = None, min_pitch_velo: Optional[float] = None,
-                             sort_by: str = "exit_velocity", limit: int = 10, order: str = "desc") -> str:
+                             sort_by: str = "exit_velocity", limit: int = 10, order: str = "desc",
+                             group_by: Optional[str] = None) -> str:
     """
     Get event-level Statcast leaderboard for a date range with advanced filtering and sorting.
     
@@ -284,6 +285,7 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                 'spin_rate', 'xba', 'xwoba', 'barrel' (default: 'exit_velocity')
         limit: Number of results to return
         order: Sort order - 'asc' or 'desc'
+        group_by: Group results by 'team' for team-wide rankings (optional)
     
     Returns:
         JSON string of statcast leaderboard
@@ -335,6 +337,80 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         }
         sort_column = sort_column_map.get(sort_by, 'launch_speed')
         
+        # Add team information for batting events
+        # For batting events, the batter's team is determined by whether they're home or away
+        # This requires checking the inning_topbot field
+        if 'inning_topbot' in data.columns and 'home_team' in data.columns and 'away_team' in data.columns:
+            data['batting_team'] = data.apply(
+                lambda row: row['away_team'] if row['inning_topbot'] == 'Top' else row['home_team'],
+                axis=1
+            )
+        else:
+            data['batting_team'] = 'Unknown'
+        
+        # Handle team grouping if requested
+        if group_by == 'team':
+            # Group by team and calculate aggregates
+            import pandas as pd
+            import numpy as np
+            
+            # Remove rows with null values in sort column before grouping
+            data = data.dropna(subset=[sort_column])
+            
+            if data.empty:
+                return f"No data available for sorting by {sort_by}"
+            
+            # Group by team and calculate statistics
+            team_stats = data.groupby('batting_team').agg({
+                sort_column: ['mean', 'max', 'count'],
+                'launch_speed': 'mean',
+                'hit_distance_sc': 'mean',
+                'release_speed': 'mean',
+                'release_spin_rate': 'mean',
+                'estimated_ba_using_speedangle': 'mean',
+                'estimated_woba_using_speedangle': 'mean',
+                'barrel': lambda x: (x == 1).sum() if 'barrel' in data.columns else 0
+            }).round(2)
+            
+            # Flatten column names
+            team_stats.columns = ['_'.join(col).strip() for col in team_stats.columns.values]
+            
+            # Sort by the main metric
+            sort_col_mean = f"{sort_column}_mean"
+            sort_col_max = f"{sort_column}_max"
+            sort_col_for_team = sort_col_max if sort_by in ['distance', 'exit_velocity', 'pitch_velocity'] else sort_col_mean
+            
+            team_stats = team_stats.sort_values(by=sort_col_for_team, ascending=(order.lower() == 'asc')).head(limit)
+            
+            # Create team leaderboard
+            leaderboard = []
+            for idx, (team, row) in enumerate(team_stats.iterrows()):
+                entry = {
+                    "rank": idx + 1,
+                    "team": team,
+                    "count": int(row.get(f"{sort_column}_count", 0)),
+                    f"{sort_by}_avg": float(row.get(f"{sort_column}_mean", 0)),
+                    f"{sort_by}_max": float(row.get(f"{sort_column}_max", 0)),
+                    "avg_exit_velocity": float(row.get('launch_speed_mean', 0)) if 'launch_speed_mean' in row else None,
+                    "avg_distance": float(row.get('hit_distance_sc_mean', 0)) if 'hit_distance_sc_mean' in row else None,
+                    "avg_pitch_velocity": float(row.get('release_speed_mean', 0)) if 'release_speed_mean' in row else None,
+                    "avg_spin_rate": float(row.get('release_spin_rate_mean', 0)) if 'release_spin_rate_mean' in row else None,
+                    "avg_xba": float(row.get('estimated_ba_using_speedangle_mean', 0)) if 'estimated_ba_using_speedangle_mean' in row else None,
+                    "avg_xwoba": float(row.get('estimated_woba_using_speedangle_mean', 0)) if 'estimated_woba_using_speedangle_mean' in row else None,
+                    "barrel_count": int(row.get('barrel_<lambda>', 0)) if 'barrel_<lambda>' in row else 0
+                }
+                leaderboard.append(entry)
+            
+            import json
+            return json.dumps({
+                "start_date": start_date,
+                "end_date": end_date,
+                "filter": {"result": result, "min_ev": min_ev, "min_pitch_velo": min_pitch_velo},
+                "sorted_by": sort_by,
+                "group_by": "team",
+                "leaderboard": leaderboard
+            }, indent=2, default=str)
+        
         # Remove rows with null values in sort column
         data = data.dropna(subset=[sort_column])
         
@@ -383,6 +459,7 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                 "xba": float(row.get('estimated_ba_using_speedangle')) if row.get('estimated_ba_using_speedangle') is not None else None,
                 "xwoba": float(row.get('estimated_woba_using_speedangle')) if row.get('estimated_woba_using_speedangle') is not None else None,
                 "barrel": bool(row.get('barrel') == 1) if row.get('barrel') is not None else None,
+                "team": str(row.get('batting_team', 'Unknown')),
                 "description": str(row.get('des', 'No description')),
                 "video_links": video_info if video_info else None
             }

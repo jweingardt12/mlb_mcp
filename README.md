@@ -54,7 +54,8 @@ Query advanced Statcast data with filtering, sorting, and video highlight links.
     - `"barrel"` - Barrel rate (perfect contact)
   - `limit` (optional): Number of results (default: 10)
   - `order` (optional): Sort order - "desc" (default) or "asc"
-- **Returns:** Detailed play-by-play data with video links
+  - `group_by` (optional): Group results by "team" for team-wide rankings
+- **Returns:** Detailed play-by-play data with video links (or team aggregations when group_by="team")
 
 ### 🎥 Video Highlights Integration
 
@@ -92,6 +93,14 @@ The server intelligently handles team names:
 - Cities: "Boston" → "BOS", "New York Yankees" → "NYY"
 - Historical teams: "Expos" → "MON", "Indians" → "CLE"
 - All 30 current MLB teams supported with common variations
+
+### 📊 Team-Wide Rankings
+
+New team aggregation feature for `statcast_leaderboard`:
+- Group results by team to see team-wide performance
+- Calculates averages, maximums, and counts for each metric
+- Perfect for questions like "Which team hits the hardest home runs?"
+- Returns comprehensive team statistics including barrel counts and expected metrics
 
 ## Installation
 
@@ -179,6 +188,22 @@ Tool: get_team_stats("Red Sox", 2024, "batting")
 ```
 Query: "Who's leading the league in home runs?"
 Tool: get_leaderboard("HR", 2024, "batting", 10)
+```
+
+### Team-Wide Rankings
+```
+Query: "Which team has the hardest hit home runs this season?"
+Tool: statcast_leaderboard("2024-04-01", "2024-10-01", "home_run", None, None, "exit_velocity", 10, "desc", "team")
+```
+
+```
+Query: "Show me teams with the longest average home run distance this month"
+Tool: statcast_leaderboard("2024-07-01", "2024-07-31", "home_run", None, None, "distance", 10, "desc", "team")
+```
+
+```
+Query: "Which teams have the highest average pitch velocity?"
+Tool: statcast_leaderboard("2024-07-20", "2024-07-20", None, None, None, "pitch_velocity", 10, "desc", "team")
 ```
 
 ## Technical Details
