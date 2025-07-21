@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timedelta
 import hashlib
 import json
+import calendar
 from functools import lru_cache
 
 # Configure logging
@@ -21,6 +22,9 @@ pybaseball = None
 
 # Cache for statcast queries (15 minute TTL)
 query_cache = {}
+
+# Cache for player names (permanent during server lifetime)
+player_name_cache = {}
 
 def load_pybaseball():
     """Lazy load pybaseball to avoid startup delays"""
@@ -39,11 +43,27 @@ def load_pybaseball():
             raise ImportError("pybaseball library is not installed. Please install it with: pip install pybaseball")
     return pybaseball
 
-def chunk_date_range(start_date: str, end_date: str, max_days: int = 5) -> List[tuple]:
-    """Split date range into chunks to avoid API limits"""
+def chunk_date_range(start_date: str, end_date: str, max_days: int = 30) -> List[tuple]:
+    """Split date range into chunks to avoid API limits
+    
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        max_days: Maximum days per chunk (default 30 for most queries)
+    
+    Returns:
+        List of (start, end) date tuples
+    """
     start = datetime.strptime(start_date, '%Y-%m-%d')
     end = datetime.strptime(end_date, '%Y-%m-%d')
     chunks = []
+    
+    # Calculate total days to determine optimal chunk size
+    total_days = (end - start).days
+    
+    # For very large date ranges, use even bigger chunks
+    if total_days > 365:
+        max_days = min(60, max_days * 2)  # Double chunk size for multi-year queries
     
     while start <= end:
         chunk_end = min(start + timedelta(days=max_days - 1), end)
@@ -63,6 +83,70 @@ def is_cache_valid(cache_entry: dict) -> bool:
         return False
     cached_time = datetime.fromisoformat(cache_entry['timestamp'])
     return (datetime.now() - cached_time).seconds < 900
+
+def get_player_names_batch(player_ids: list) -> dict:
+    """Get player names from IDs in batch with caching"""
+    # First check cache
+    result = {}
+    missing_ids = []
+    
+    for pid in player_ids:
+        if pid in player_name_cache:
+            result[pid] = player_name_cache[pid]
+        else:
+            missing_ids.append(pid)
+    
+    # Look up missing IDs
+    if missing_ids:
+        try:
+            pb = load_pybaseball()
+            from pybaseball import playerid_reverse_lookup
+            
+            logger.info(f"Looking up {len(missing_ids)} player names...")
+            # Look up all missing players at once
+            player_data = playerid_reverse_lookup(missing_ids, key_type='mlbam')
+            
+            for _, player in player_data.iterrows():
+                player_id = player['key_mlbam']
+                full_name = f"{player['name_first']} {player['name_last']}"
+                player_name_cache[player_id] = full_name
+                result[player_id] = full_name
+                
+        except Exception as e:
+            logger.debug(f"Could not look up players: {e}")
+    
+    # Add placeholder for any still missing
+    for pid in player_ids:
+        if pid not in result:
+            result[pid] = f"Player {pid}"
+    
+    return result
+
+def add_batter_names_to_data(data, batter_col='batter'):
+    """Add batter_name column to statcast data efficiently
+    
+    Args:
+        data: pandas DataFrame with statcast data
+        batter_col: name of column containing batter IDs
+        
+    Returns:
+        DataFrame with added batter_name column
+    """
+    if data.empty or batter_col not in data.columns:
+        return data
+    
+    # Get unique batter IDs
+    unique_batters = data[batter_col].dropna().unique()
+    if len(unique_batters) == 0:
+        return data
+    
+    # Batch lookup all names
+    batter_names = get_player_names_batch(unique_batters.tolist())
+    
+    # Map names to data
+    data['batter_name'] = data[batter_col].map(batter_names)
+    
+    return data
 
 @mcp.tool()
 async def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> str:
@@ -679,124 +763,77 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
         
         logger.info(f"Counting {result_type} from {start_date} to {end_date}")
         
-        # For multi-year queries, use monthly sampling to avoid timeouts
-        start = datetime.strptime(start_date, '%Y-%m-%d')
-        end = datetime.strptime(end_date, '%Y-%m-%d')
-        days_span = (end - start).days
+        # Use optimized chunking for all queries
+        date_chunks = chunk_date_range(start_date, end_date, max_days=45)  # Larger chunks for counting
+        all_data = []
+        total_count = 0
+        yearly_counts = {}
         
-        # Determine sampling strategy based on date range
-        if days_span > 365:
-            # For multi-year, sample 3 days per month
-            sample_days = [1, 15, 28]
-        elif days_span > 180:
-            # For 6-12 months, sample weekly
-            sample_days = list(range(1, 32, 7))
-        else:
-            # For < 6 months, use regular chunking
-            date_chunks = chunk_date_range(start_date, end_date)
-            all_data = []
-            
-            for chunk_start, chunk_end in date_chunks:
-                try:
-                    data = statcast(start_dt=chunk_start, end_dt=chunk_end)
-                    if not data.empty:
-                        all_data.append(data)
-                except Exception as e:
-                    logger.error(f"Error fetching chunk {chunk_start} to {chunk_end}: {str(e)}")
-                    continue
-            
-            if all_data:
-                data = pd.concat(all_data, ignore_index=True)
-            else:
-                data = pd.DataFrame()
+        logger.info(f"Query will fetch data in {len(date_chunks)} chunks")
         
-        # For long date ranges, use sampling
-        if days_span > 180:
-            all_data = []
-            current = start
-            
-            while current <= end:
-                year = current.year
-                month = current.month
+        for i, (chunk_start, chunk_end) in enumerate(date_chunks, 1):
+            try:
+                logger.info(f"Fetching chunk {i}/{len(date_chunks)}: {chunk_start} to {chunk_end}")
+                chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
                 
-                for day in sample_days:
-                    try:
-                        # Create valid date
-                        sample_date = datetime(year, month, min(day, 28 if month == 2 else 30 if month in [4,6,9,11] else 31))
-                        if sample_date > end:
-                            break
-                        if sample_date < start:
-                            continue
-                            
-                        date_str = sample_date.strftime('%Y-%m-%d')
-                        logger.info(f"Sampling {date_str}")
+                if not chunk_data.empty:
+                    # Apply filters immediately to reduce memory
+                    if result_type:
+                        if result_type == 'batted_ball':
+                            chunk_data = chunk_data[chunk_data['type'] == 'X']
+                        elif result_type == 'hit':
+                            chunk_data = chunk_data[chunk_data['events'].isin(['single', 'double', 'triple', 'home_run'])]
+                        else:
+                            chunk_data = chunk_data[chunk_data['events'] == result_type]
+                    
+                    # Apply distance and exit velocity filters
+                    if min_distance:
+                        chunk_data = chunk_data[chunk_data['hit_distance_sc'] >= min_distance]
+                    if max_distance:
+                        chunk_data = chunk_data[chunk_data['hit_distance_sc'] <= max_distance]
+                    if min_exit_velocity:
+                        chunk_data = chunk_data[chunk_data['launch_speed'] >= min_exit_velocity]
+                    if max_exit_velocity:
+                        chunk_data = chunk_data[chunk_data['launch_speed'] <= max_exit_velocity]
+                    
+                    if not chunk_data.empty:
+                        # Count by year
+                        chunk_data['year'] = pd.to_datetime(chunk_data['game_date']).dt.year
+                        year_counts = chunk_data['year'].value_counts().to_dict()
                         
-                        sample_data = statcast(start_dt=date_str, end_dt=date_str)
-                        if not sample_data.empty:
-                            all_data.append(sample_data)
-                    except Exception as e:
-                        logger.error(f"Error sampling {year}-{month}-{day}: {str(e)}")
-                        continue
-                
-                # Move to next month
-                if month == 12:
-                    current = datetime(year + 1, 1, 1)
-                else:
-                    current = datetime(year, month + 1, 1)
-            
-            if all_data:
-                data = pd.concat(all_data, ignore_index=True)
-            else:
-                data = pd.DataFrame()
+                        for year, count in year_counts.items():
+                            yearly_counts[year] = yearly_counts.get(year, 0) + count
+                            total_count += count
+                        
+                        all_data.append(chunk_data)
+                        logger.info(f"  Found {len(chunk_data)} matching events in this chunk")
+                        
+            except Exception as e:
+                logger.error(f"Error fetching chunk {chunk_start} to {chunk_end}: {str(e)}")
+                continue
+        
+        # Combine all data for examples
+        if all_data:
+            data = pd.concat(all_data, ignore_index=True)
+        else:
+            data = pd.DataFrame()
         
         if data.empty:
-            return json.dumps({"error": "No data found for the specified date range"})
+            return json.dumps({
+                "query": f"Count of {result_type or 'all events'} from {start_date} to {end_date}",
+                "total_count": 0,
+                "yearly_breakdown": {},
+                "filters": {
+                    "result_type": result_type,
+                    "min_distance": min_distance,
+                    "max_distance": max_distance,
+                    "min_exit_velocity": min_exit_velocity,
+                    "max_exit_velocity": max_exit_velocity
+                }
+            })
         
-        # Apply filters
-        if result_type == 'home_run':
-            data = data[data['events'] == 'home_run']
-        elif result_type == 'hit':
-            data = data[data['events'].isin(['single', 'double', 'triple', 'home_run'])]
-        elif result_type == 'batted_ball':
-            data = data[data['type'] == 'X']
-        else:
-            data = data[data['events'] == result_type]
-        
-        if min_distance:
-            data = data[data['hit_distance_sc'] >= min_distance]
-        if max_distance:
-            data = data[data['hit_distance_sc'] <= max_distance]
-        if min_exit_velocity:
-            data = data[data['launch_speed'] >= min_exit_velocity]
-        if max_exit_velocity:
-            data = data[data['launch_speed'] <= max_exit_velocity]
-        
-        # Calculate scaling factor for sampled data
-        if days_span > 180:
-            # Estimate total based on sampling
-            sample_size = len(all_data)
-            if days_span > 365:
-                # 3 days per month sampling
-                months_span = days_span / 30.4
-                expected_samples = months_span * 3
-                scaling_factor = days_span / expected_samples
-            else:
-                # Weekly sampling
-                scaling_factor = 7
-        else:
-            scaling_factor = 1
-        
-        # Get counts
-        total_count = len(data)
-        estimated_total = int(total_count * scaling_factor)
-        
-        # Breakdown by year
-        data['year'] = pd.to_datetime(data['game_date']).dt.year
-        yearly_counts = data.groupby('year').size()
-        yearly_breakdown = {
-            str(year): int(count * scaling_factor) 
-            for year, count in yearly_counts.items()
-        }
+        # Add batter names for examples
+        data = add_batter_names_to_data(data)
         
         # Get top examples
         examples = []
@@ -807,7 +844,8 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
             
             for _, row in top_data.iterrows():
                 example = {
-                    'player': str(row.get('player_name', 'Unknown')),
+                    'player': str(row.get('batter_name', f"Player {row.get('batter', 'Unknown')}")),
+                    'pitcher': str(row.get('player_name', 'Unknown')),  # player_name is the pitcher
                     'date': str(row.get('game_date', 'Unknown')),
                     'distance': float(row.get('hit_distance_sc')) if pd.notna(row.get('hit_distance_sc')) else None,
                     'exit_velocity': float(row.get('launch_speed')) if pd.notna(row.get('launch_speed')) else None,
@@ -823,6 +861,7 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
         
         # Create response
         response = {
+            'query': f"Count of {result_type or 'all events'} from {start_date} to {end_date}",
             'start_date': start_date,
             'end_date': end_date,
             'filters': {
@@ -832,10 +871,8 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
                 'min_exit_velocity': min_exit_velocity,
                 'max_exit_velocity': max_exit_velocity
             },
-            'count': estimated_total,
-            'actual_sampled': total_count,
-            'sampling_note': f"Estimated from {sample_size} sampled days" if days_span > 180 else "Complete data",
-            'yearly_breakdown': yearly_breakdown,
+            'total_count': total_count,
+            'yearly_breakdown': yearly_counts,
             'top_examples': examples
         }
         
@@ -852,6 +889,166 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
     except Exception as e:
         logger.error(f"Error in statcast_count: {str(e)}")
         return json.dumps({"error": str(e)})
+
+@mcp.tool()
+async def top_home_runs(year_start: int = 2023, year_end: Optional[int] = None, 
+                        limit: int = 5, min_exit_velocity: Optional[float] = None) -> str:
+    """
+    Get top home runs by exit velocity for a given year range. Optimized for performance.
+    
+    Args:
+        year_start: Starting year (default: 2023)
+        year_end: Ending year (default: current year)
+        limit: Number of results to return (default: 5)
+        min_exit_velocity: Minimum exit velocity filter in mph (optional)
+    
+    Returns:
+        JSON string of top home runs
+    """
+    try:
+        if year_end is None:
+            year_end = datetime.now().year
+            
+        # Check cache first
+        cache_key = f"top_hr_{year_start}_{year_end}_{limit}_{min_exit_velocity}"
+        if cache_key in query_cache and is_cache_valid(query_cache[cache_key]):
+            logger.info(f"Using cached data for top home runs query")
+            return query_cache[cache_key]['data']
+        
+        pb = load_pybaseball()
+        from pybaseball import statcast
+        import pandas as pd
+        import numpy as np
+        
+        # Maintain a running list of top home runs
+        top_hrs = []
+        
+        logger.info(f"Fetching top {limit} home runs from {year_start} to {year_end}")
+        
+        # Query month by month during baseball season only
+        for year in range(year_start, year_end + 1):
+            # Baseball season is typically March to October
+            for month in range(3, 11):  # March to October
+                try:
+                    # Calculate month date range
+                    start_date = f"{year}-{month:02d}-01"
+                    if month == 10:  # October
+                        end_date = f"{year}-{month:02d}-31"
+                    else:
+                        # Last day of month
+                        if month in [4, 6, 9]:  # April, June, September
+                            end_date = f"{year}-{month:02d}-30"
+                        else:
+                            end_date = f"{year}-{month:02d}-31"
+                    
+                    logger.info(f"Checking {year} {calendar.month_name[month]}")
+                    
+                    # Query only home runs for this month
+                    month_data = statcast(start_dt=start_date, end_dt=end_date)
+                    
+                    if not month_data.empty:
+                        # Filter home runs
+                        hrs = month_data[month_data['events'] == 'home_run']
+                        
+                        # Apply exit velocity filter if specified
+                        if min_exit_velocity:
+                            hrs = hrs[hrs['launch_speed'] >= min_exit_velocity]
+                        
+                        if not hrs.empty:
+                            # Sort by exit velocity and get top ones
+                            hrs_sorted = hrs.sort_values('launch_speed', ascending=False)
+                            
+                            # Add to our running list
+                            for _, hr in hrs_sorted.iterrows():
+                                try:
+                                    # Safely convert values, handling NAType
+                                    exit_vel = hr['launch_speed']
+                                    if pd.isna(exit_vel):
+                                        continue  # Skip rows with missing exit velocity
+                                    
+                                    # Note: player_name in statcast data is the pitcher's name
+                                    # The batter ID is in the 'batter' column
+                                    batter_id = hr.get('batter')
+                                    if pd.isna(batter_id):
+                                        continue
+                                    
+                                    top_hrs.append({
+                                        'exit_velocity': float(exit_vel),
+                                        'batter_id': int(batter_id),  # Store ID for batch lookup later
+                                        'player': f"Batter {batter_id}",  # Temporary, will be replaced
+                                        'pitcher': str(hr.get('player_name', 'Unknown')),  # This is actually the pitcher
+                                        'date': str(hr.get('game_date', 'Unknown')),
+                                        'distance': float(hr.get('hit_distance_sc', 0)) if pd.notna(hr.get('hit_distance_sc')) else 0,
+                                        'launch_angle': float(hr.get('launch_angle', 0)) if pd.notna(hr.get('launch_angle')) else 0,
+                                        'pitch_velocity': float(hr.get('release_speed', 0)) if pd.notna(hr.get('release_speed')) else 0,
+                                        'pitch_type': str(hr.get('pitch_type', 'Unknown')),
+                                        'team': str(hr.get('batting_team', hr.get('home_team', 'Unknown'))),
+                                        'description': str(hr.get('des', 'No description')),
+                                        'game_pk': str(hr.get('game_pk', ''))
+                                    })
+                                except (ValueError, TypeError) as e:
+                                    logger.debug(f"Skipping row due to conversion error: {e}")
+                                    continue
+                            
+                            # Keep only top N
+                            top_hrs = sorted(top_hrs, key=lambda x: x['exit_velocity'], reverse=True)[:limit]
+                            logger.info(f"  Found {len(hrs)} home runs, current top EV: {top_hrs[0]['exit_velocity']:.1f} mph")
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching {year}-{month:02d}: {str(e)}")
+                    continue
+        
+        # Look up all batter names at once
+        logger.info("Looking up player names...")
+        batter_ids = [hr['batter_id'] for hr in top_hrs if 'batter_id' in hr]
+        if batter_ids:
+            name_map = get_player_names_batch(batter_ids)
+            for hr in top_hrs:
+                if 'batter_id' in hr:
+                    hr['player'] = name_map.get(hr['batter_id'], hr['player'])
+        
+        # Format final results
+        result = {
+            "query": f"Top {limit} hardest hit home runs from {year_start} to {year_end}",
+            "min_exit_velocity_filter": min_exit_velocity,
+            "results": []
+        }
+        
+        for i, hr in enumerate(top_hrs, 1):
+            # Add video links
+            video_info = {}
+            if hr['game_pk']:
+                video_info['game_highlights_url'] = f"https://www.mlb.com/gameday/{hr['game_pk']}/video"
+                player_name = hr['player'].replace(' ', '+')
+                video_info['film_room_search'] = f"https://www.mlb.com/video/search?q={player_name}+{hr['date']}"
+            
+            result["results"].append({
+                "rank": i,
+                "player": hr['player'],
+                "pitcher": hr.get('pitcher', 'Unknown'),
+                "date": hr['date'],
+                "exit_velocity": hr['exit_velocity'],
+                "distance": hr['distance'],
+                "launch_angle": hr['launch_angle'],
+                "pitch": f"{hr['pitch_velocity']} mph {hr['pitch_type']}",
+                "team": hr['team'],
+                "description": hr['description'],
+                "video_links": video_info if video_info else None
+            })
+        
+        response = json.dumps(result, indent=2)
+        
+        # Cache the result
+        query_cache[cache_key] = {
+            'data': response,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error getting top home runs: {str(e)}")
+        return f"Error: {str(e)}"
 
 @mcp.tool()
 async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None, 
@@ -902,12 +1099,21 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         date_chunks = chunk_date_range(start_date, end_date)
         all_data = []
         
-        for chunk_start, chunk_end in date_chunks:
+        logger.info(f"Query will fetch data in {len(date_chunks)} chunks")
+        
+        for i, (chunk_start, chunk_end) in enumerate(date_chunks, 1):
             try:
-                logger.info(f"Fetching chunk: {chunk_start} to {chunk_end}")
+                logger.info(f"Fetching chunk {i}/{len(date_chunks)}: {chunk_start} to {chunk_end}")
                 chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
                 if not chunk_data.empty:
-                    all_data.append(chunk_data)
+                    # If we're looking for specific events, filter early to reduce memory usage
+                    if result:
+                        chunk_data = chunk_data[chunk_data['events'] == result]
+                    if min_ev:
+                        chunk_data = chunk_data[chunk_data['launch_speed'] >= min_ev]
+                    if not chunk_data.empty:
+                        all_data.append(chunk_data)
+                        logger.info(f"  Found {len(chunk_data)} matching events in this chunk")
             except Exception as e:
                 logger.error(f"Error fetching chunk {chunk_start} to {chunk_end}: {str(e)}")
                 continue
@@ -917,6 +1123,9 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         
         # Combine all chunks
         data = pd.concat(all_data, ignore_index=True) if len(all_data) > 1 else all_data[0]
+        
+        # Add batter names before filtering
+        data = add_batter_names_to_data(data)
         
         # Apply filters efficiently
         if result:
@@ -1084,18 +1293,19 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
             # Always generate comprehensive video links when game_pk is available
             entry = {
                 "rank": idx + 1,
-                "player": str(row.get('player_name', 'Unknown')),
+                "player": str(row.get('batter_name', f"Player {row.get('batter', 'Unknown')}")),
+                "pitcher": str(row.get('player_name', 'Unknown')),  # player_name is the pitcher
                 "date": str(row.get('game_date', 'Unknown')),
-                "exit_velocity": float(row.get('launch_speed')) if row.get('launch_speed') is not None else None,
-                "launch_angle": float(row.get('launch_angle')) if row.get('launch_angle') is not None else None,
-                "distance": float(row.get('hit_distance_sc')) if row.get('hit_distance_sc') is not None else None,
+                "exit_velocity": float(row.get('launch_speed')) if pd.notna(row.get('launch_speed')) else None,
+                "launch_angle": float(row.get('launch_angle')) if pd.notna(row.get('launch_angle')) else None,
+                "distance": float(row.get('hit_distance_sc')) if pd.notna(row.get('hit_distance_sc')) else None,
                 "result": str(row.get('events', 'Unknown')),
-                "pitch_velocity": float(row.get('release_speed')) if row.get('release_speed') is not None else None,
+                "pitch_velocity": float(row.get('release_speed')) if pd.notna(row.get('release_speed')) else None,
                 "pitch_type": str(row.get('pitch_type', 'Unknown')),
-                "spin_rate": float(row.get('release_spin_rate')) if row.get('release_spin_rate') is not None else None,
-                "xba": float(row.get('estimated_ba_using_speedangle')) if row.get('estimated_ba_using_speedangle') is not None else None,
-                "xwoba": float(row.get('estimated_woba_using_speedangle')) if row.get('estimated_woba_using_speedangle') is not None else None,
-                "barrel": bool(row.get('barrel') == 1) if row.get('barrel') is not None else None,
+                "spin_rate": float(row.get('release_spin_rate')) if pd.notna(row.get('release_spin_rate')) else None,
+                "xba": float(row.get('estimated_ba_using_speedangle')) if pd.notna(row.get('estimated_ba_using_speedangle')) else None,
+                "xwoba": float(row.get('estimated_woba_using_speedangle')) if pd.notna(row.get('estimated_woba_using_speedangle')) else None,
+                "barrel": bool(row.get('barrel') == 1) if pd.notna(row.get('barrel')) else None,
                 "team": str(row.get('batting_team', 'Unknown')),
                 "description": str(row.get('des', 'No description')),
                 "video_links": video_info if video_info else None
