@@ -297,6 +297,163 @@ async def get_leaderboard(stat: str, season: int, leaderboard_type: str = "batti
         return f"Error: {str(e)}"
 
 @mcp.tool()
+async def team_season_stats(year: int, stat: str = "exit_velocity", min_result_type: Optional[str] = None) -> str:
+    """
+    Get team season averages for Statcast metrics. Optimized for fast team comparisons.
+    
+    Args:
+        year: Season year (e.g., 2025)
+        stat: Metric to analyze - 'exit_velocity', 'distance', 'launch_angle', 'barrel_rate', 
+              'hard_hit_rate' (95+ mph), 'sweet_spot_rate' (8-32 degree launch angle)
+        min_result_type: Filter to specific results like 'batted_ball' (all), 'home_run', 'hit' (optional)
+    
+    Returns:
+        JSON string of team rankings by selected metric
+    """
+    try:
+        # Special cache for season-wide team stats (24-hour TTL)
+        cache_key = f"team_season_{year}_{stat}_{min_result_type}"
+        
+        if cache_key in query_cache:
+            cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
+            if (datetime.now() - cached_time).seconds < 86400:  # 24 hour cache
+                logger.info(f"Using cached team season data for {cache_key}")
+                return query_cache[cache_key]['data']
+        
+        pb = load_pybaseball()
+        from pybaseball import statcast
+        import pandas as pd
+        import numpy as np
+        
+        # For current year, use year-to-date. For past years, use April-October
+        if year == datetime.now().year:
+            start_date = f"{year}-04-01"
+            end_date = datetime.now().strftime('%Y-%m-%d')
+        else:
+            start_date = f"{year}-04-01" 
+            end_date = f"{year}-10-31"
+        
+        logger.info(f"Fetching team season stats for {year}, stat={stat}")
+        
+        # Use a sampling approach for current season to avoid timeouts
+        # Sample every 7th day to get representative data quickly
+        sample_dates = []
+        current = datetime.strptime(start_date, '%Y-%m-%d')
+        end = datetime.strptime(end_date, '%Y-%m-%d')
+        
+        while current <= end:
+            sample_dates.append(current.strftime('%Y-%m-%d'))
+            current += timedelta(days=7)
+        
+        # Fetch sample data
+        all_data = []
+        for sample_date in sample_dates:
+            try:
+                # Get one day of data
+                data = statcast(start_dt=sample_date, end_dt=sample_date)
+                if not data.empty:
+                    all_data.append(data)
+            except Exception as e:
+                logger.error(f"Error fetching data for {sample_date}: {str(e)}")
+                continue
+        
+        if not all_data:
+            return f"No data available for {year} season"
+        
+        # Combine samples
+        data = pd.concat(all_data, ignore_index=True)
+        
+        # Filter by result type if specified
+        if min_result_type:
+            if min_result_type == 'batted_ball':
+                data = data[data['type'] == 'X']  # Balls in play
+            elif min_result_type == 'hit':
+                data = data[data['events'].isin(['single', 'double', 'triple', 'home_run'])]
+            elif min_result_type == 'home_run':
+                data = data[data['events'] == 'home_run']
+            else:
+                data = data[data['events'] == min_result_type]
+        
+        # Add batting team using vectorized operations
+        data['batting_team'] = np.where(
+            data['inning_topbot'] == 'Top',
+            data['away_team'],
+            data['home_team']
+        )
+        
+        # Calculate team statistics based on requested stat
+        if stat == 'exit_velocity':
+            team_stats = data.groupby('batting_team')['launch_speed'].agg(['mean', 'count', 'std']).round(2)
+            team_stats.columns = ['avg_exit_velocity', 'batted_balls', 'std_dev']
+        elif stat == 'distance':
+            team_stats = data.groupby('batting_team')['hit_distance_sc'].agg(['mean', 'max', 'count']).round(2)
+            team_stats.columns = ['avg_distance', 'max_distance', 'batted_balls']
+        elif stat == 'launch_angle':
+            team_stats = data.groupby('batting_team')['launch_angle'].agg(['mean', 'count']).round(2)
+            team_stats.columns = ['avg_launch_angle', 'batted_balls']
+        elif stat == 'barrel_rate':
+            barrel_stats = data.groupby('batting_team').agg({
+                'barrel': lambda x: (x == 1).sum(),
+                'launch_speed': 'count'
+            })
+            team_stats = pd.DataFrame({
+                'barrel_rate': (barrel_stats['barrel'] / barrel_stats['launch_speed'] * 100).round(2),
+                'barrels': barrel_stats['barrel'],
+                'batted_balls': barrel_stats['launch_speed']
+            })
+        elif stat == 'hard_hit_rate':
+            hard_hit = data[data['launch_speed'] >= 95].groupby('batting_team').size()
+            total = data.groupby('batting_team')['launch_speed'].count()
+            team_stats = pd.DataFrame({
+                'hard_hit_rate': (hard_hit / total * 100).round(2),
+                'hard_hit_balls': hard_hit,
+                'batted_balls': total
+            })
+        elif stat == 'sweet_spot_rate':
+            sweet_spot = data[(data['launch_angle'] >= 8) & (data['launch_angle'] <= 32)].groupby('batting_team').size()
+            total = data.groupby('batting_team')['launch_angle'].count()
+            team_stats = pd.DataFrame({
+                'sweet_spot_rate': (sweet_spot / total * 100).round(2),
+                'sweet_spot_balls': sweet_spot,
+                'batted_balls': total
+            })
+        
+        # Sort by primary metric
+        primary_col = team_stats.columns[0]
+        team_stats = team_stats.sort_values(by=primary_col, ascending=False)
+        
+        # Create leaderboard
+        leaderboard = []
+        for idx, (team, row) in enumerate(team_stats.iterrows()):
+            entry = {
+                "rank": idx + 1,
+                "team": team,
+                **row.to_dict()
+            }
+            leaderboard.append(entry)
+        
+        response = json.dumps({
+            "year": year,
+            "stat": stat,
+            "filter": min_result_type,
+            "sample_size": f"{len(sample_dates)} days sampled",
+            "total_events": len(data),
+            "leaderboard": leaderboard
+        }, indent=2, default=str)
+        
+        # Cache the result
+        query_cache[cache_key] = {
+            'data': response,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error getting team season stats: {str(e)}")
+        return f"Error: {str(e)}"
+
+@mcp.tool()
 async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None, 
                              min_ev: Optional[float] = None, min_pitch_velo: Optional[float] = None,
                              sort_by: str = "exit_velocity", limit: int = 10, order: str = "desc",

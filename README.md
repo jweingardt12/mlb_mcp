@@ -4,11 +4,11 @@ A Model Context Protocol (MCP) server that provides comprehensive MLB baseball s
 
 ## Overview
 
-This MCP server enables AI assistants to access real-time MLB statistics, historical data, and video highlights. It provides four powerful tools for querying baseball data, from individual player performance to team statistics and advanced Statcast metrics.
+This MCP server enables AI assistants to access real-time MLB statistics, historical data, and video highlights. It provides five powerful tools for querying baseball data, from individual player performance to team statistics and advanced Statcast metrics.
 
 ## Features
 
-### 🎯 4 Core Tools
+### 🎯 5 Core Tools
 
 #### 1. `get_player_stats`
 Get detailed Statcast data for any MLB player with optional date filtering.
@@ -56,6 +56,24 @@ Query advanced Statcast data with filtering, sorting, and video highlight links.
   - `order` (optional): Sort order - "desc" (default) or "asc"
   - `group_by` (optional): Group results by "team" for team-wide rankings
 - **Returns:** Detailed play-by-play data with video links (or team aggregations when group_by="team")
+
+#### 5. `team_season_stats`
+Get fast team season averages for Statcast metrics. Optimized for queries like "which team hits the ball hardest?".
+- **Parameters:**
+  - `year` (required): Season year (e.g., 2025)
+  - `stat` (optional): Metric to analyze
+    - `"exit_velocity"` (default) - Average exit velocity
+    - `"distance"` - Average and max distance
+    - `"launch_angle"` - Average launch angle
+    - `"barrel_rate"` - Percentage of barrels (perfect contact)
+    - `"hard_hit_rate"` - Percentage of balls hit 95+ mph
+    - `"sweet_spot_rate"` - Percentage hit at optimal launch angles (8-32°)
+  - `min_result_type` (optional): Filter by result type
+    - `"batted_ball"` - All balls in play
+    - `"home_run"` - Home runs only
+    - `"hit"` - All hits (singles, doubles, triples, home runs)
+- **Returns:** Team rankings with averages, counts, and other statistics
+- **Performance:** Uses sampling strategy (every 7th day) and 24-hour caching for instant responses
 
 ### 🎥 Video Highlights Integration
 
@@ -190,7 +208,7 @@ Query: "Who's leading the league in home runs?"
 Tool: get_leaderboard("HR", 2024, "batting", 10)
 ```
 
-### Team-Wide Rankings
+### Team-Wide Rankings (statcast_leaderboard)
 ```
 Query: "Which team has the hardest hit home runs this season?"
 Tool: statcast_leaderboard("2024-04-01", "2024-10-01", "home_run", None, None, "exit_velocity", 10, "desc", "team")
@@ -206,6 +224,27 @@ Query: "Which teams have the highest average pitch velocity?"
 Tool: statcast_leaderboard("2024-07-20", "2024-07-20", None, None, None, "pitch_velocity", 10, "desc", "team")
 ```
 
+### Team Season Averages (team_season_stats)
+```
+Query: "What team averages the hardest hit balls in 2025?"
+Tool: team_season_stats(2025, "exit_velocity")
+```
+
+```
+Query: "Which team has the highest barrel rate this season?"
+Tool: team_season_stats(2025, "barrel_rate")
+```
+
+```
+Query: "Show me teams with the highest hard-hit rate on home runs only"
+Tool: team_season_stats(2025, "hard_hit_rate", "home_run")
+```
+
+```
+Query: "What team hits the ball the farthest on average?"
+Tool: team_season_stats(2025, "distance")
+```
+
 ## Technical Details
 
 ### Architecture
@@ -217,8 +256,10 @@ Tool: statcast_leaderboard("2024-07-20", "2024-07-20", None, None, None, "pitch_
 
 ### Performance Optimizations
 - **Query Chunking**: Automatically splits large date ranges into 5-day chunks to handle Baseball Savant's 30,000 row limit
-- **Response Caching**: 15-minute cache for repeated queries reduces API calls and improves response times
+- **Response Caching**: 15-minute cache for repeated queries, 24-hour cache for team season stats
 - **Vectorized Operations**: Uses NumPy for efficient team identification instead of slower pandas apply() operations
+- **Sampling Strategy**: `team_season_stats` uses every 7th day sampling for full-season queries to avoid timeouts
+- **Specialized Tools**: Dedicated `team_season_stats` tool for common aggregate queries that would timeout with full data
 - **Lazy Loading**: Heavy dependencies (pandas, numpy, pybaseball) loaded only when needed for fast startup
 - **Efficient Filtering**: Applies filters sequentially to minimize data processing overhead
 
