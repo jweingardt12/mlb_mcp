@@ -4,11 +4,11 @@ A Model Context Protocol (MCP) server that provides comprehensive MLB baseball s
 
 ## Overview
 
-This MCP server enables AI assistants to access real-time MLB statistics, historical data, and video highlights. It provides six powerful tools for querying baseball data, from individual player performance to team statistics and advanced Statcast metrics.
+This MCP server enables AI assistants to access real-time MLB statistics, historical data, and video highlights. It provides seven powerful tools for querying baseball data, from individual player performance to team statistics and advanced Statcast metrics.
 
 ## Features
 
-### 🎯 6 Core Tools
+### 🎯 7 Core Tools
 
 #### 1. `get_player_stats`
 Get detailed Statcast data for any MLB player with optional date filtering.
@@ -98,6 +98,23 @@ Get fast team pitching averages for Statcast metrics. Optimized for queries like
     - `"FS"` - Splitter
 - **Returns:** Team pitching rankings with averages, counts, and other statistics
 - **Performance:** Uses sampling strategy (every 7th day) and 24-hour caching for instant responses
+
+#### 7. `statcast_count`
+Count Statcast events matching specific criteria. Optimized for multi-year queries like "how many 475+ ft home runs since 2023?"
+- **Parameters:**
+  - `start_date` (required): Start date in YYYY-MM-DD format
+  - `end_date` (required): End date in YYYY-MM-DD format
+  - `result_type` (optional): Type to count - 'home_run' (default), 'hit', 'batted_ball', or specific like 'double'
+  - `min_distance` (optional): Minimum distance in feet (e.g., 475)
+  - `max_distance` (optional): Maximum distance in feet
+  - `min_exit_velocity` (optional): Minimum exit velocity in mph
+  - `max_exit_velocity` (optional): Maximum exit velocity in mph
+- **Returns:** Total count, yearly breakdown, and top 5 examples with video links
+- **Performance:** 
+  - Multi-year queries: Samples 3 days per month (~90x fewer API calls)
+  - 6-12 months: Weekly sampling (~7x fewer API calls)
+  - <6 months: Complete data with chunking
+  - 24-hour caching for all queries
 
 ### 🎥 Video Highlights Integration
 
@@ -295,6 +312,27 @@ Query: "Which team has the lowest expected ERA based on contact quality?"
 Tool: team_pitching_stats(2025, "xera")
 ```
 
+### Counting Queries (statcast_count)
+```
+Query: "How many home runs hit over 475 ft have been hit since 2023?"
+Tool: statcast_count("2023-01-01", "2025-12-31", "home_run", 475)
+```
+
+```
+Query: "Count all 110+ mph batted balls this season"
+Tool: statcast_count("2025-04-01", "2025-10-31", "batted_ball", None, 110)
+```
+
+```
+Query: "How many home runs between 400-450 feet were hit last year?"
+Tool: statcast_count("2024-04-01", "2024-10-31", "home_run", 400, None, 450)
+```
+
+```
+Query: "Total hits with exit velocity over 100 mph since 2022"
+Tool: statcast_count("2022-01-01", "2025-12-31", "hit", None, 100)
+```
+
 ## Technical Details
 
 ### Architecture
@@ -308,8 +346,13 @@ Tool: team_pitching_stats(2025, "xera")
 - **Query Chunking**: Automatically splits large date ranges into 5-day chunks to handle Baseball Savant's 30,000 row limit
 - **Response Caching**: 15-minute cache for repeated queries, 24-hour cache for team season stats
 - **Vectorized Operations**: Uses NumPy for efficient team identification instead of slower pandas apply() operations
-- **Sampling Strategy**: `team_season_stats` and `team_pitching_stats` use every 7th day sampling for full-season queries to avoid timeouts
-- **Specialized Tools**: Dedicated `team_season_stats` and `team_pitching_stats` tools for common aggregate queries that would timeout with full data
+- **Sampling Strategy**: 
+  - `team_season_stats` and `team_pitching_stats`: Every 7th day sampling
+  - `statcast_count`: Adaptive sampling (3 days/month for multi-year, weekly for 6-12 months)
+- **Specialized Tools**: Dedicated tools for common aggregate queries that would timeout with full data:
+  - `team_season_stats` for batting metrics
+  - `team_pitching_stats` for pitching metrics
+  - `statcast_count` for counting queries across multiple years
 - **Lazy Loading**: Heavy dependencies (pandas, numpy, pybaseball) loaded only when needed for fast startup
 - **Efficient Filtering**: Applies filters sequentially to minimize data processing overhead
 
