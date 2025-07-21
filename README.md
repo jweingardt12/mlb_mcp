@@ -1,57 +1,78 @@
-# Pybaseball MCP Server
+# MLB Stats MCP Server
 
-
-This is a FastAPI-based MCP server that exposes MLB and Fangraphs baseball data via the [pybaseballstats](https://pypi.org/project/pybaseballstats/) library.
-The `pybaseballstats` package relies on common scientific Python libraries such as pandas and numpy.
+A Model Context Protocol (MCP) server that provides MLB baseball statistics through the [pybaseballstats](https://pypi.org/project/pybaseballstats/) library.
 
 ## Features
-- `/player?name=...` — Get player Statcast data by name (optionally filter by date range)
-- `/team_stats?team=...&year=...&type=batting|pitching` — Get team batting or pitching stats for a given year
-- `/leaderboard?stat=...&season=...&league=...&type=batting|pitching` — Get MLB leaderboard for a stat, season, and league
 
-## Setup
+This server exposes 4 tools for accessing MLB data:
+
+1. **get_player_stats** - Get player statcast data by name with optional date filtering
+   - Parameters: `name` (required), `start_date`, `end_date` (optional, YYYY-MM-DD format)
+   
+2. **get_team_stats** - Get team batting or pitching statistics for a given year
+   - Parameters: `team` (required), `year` (required), `stat_type` (optional, defaults to "batting")
+   
+3. **get_leaderboard** - Get statistical leaderboards (HR, AVG, ERA, etc.)
+   - Parameters: `stat` (required), `season` (required), `leaderboard_type` (optional), `limit` (optional)
+   
+4. **statcast_leaderboard** - Get event-level Statcast data filtered by exit velocity, result type, etc.
+   - Parameters: `start_date` (required), `end_date` (required), `result`, `min_ev`, `limit`, `order` (optional)
+
+## Deployment
+
+This server is designed for deployment on [Smithery](https://smithery.ai) and uses stdio transport for communication.
+
+### Configuration
+
+The server uses the Model Context Protocol with stdio transport. See `smithery.yaml` for deployment configuration.
+
+### Requirements
+
+- Python 3.11+
+- fastmcp library for MCP protocol support
+- pybaseballstats for MLB data access
+- pandas, numpy (installed automatically as dependencies)
+
+## Installation
+
+### Smithery
+Deploy directly to Smithery by connecting your GitHub repository.
+
+### Local Development
 ```bash
 pip install -r requirements.txt
-uvicorn main:app --reload
+python -m server
 ```
 
-## Example Usage
-- **Player stats:**
-  - `GET /player?name=Mike Trout`
-  - `GET /player?name=Shohei Ohtani&start_date=2023-04-01&end_date=2023-10-01`
-- **Team stats:**
-  - `GET /team_stats?team=Yankees&year=2023&type=batting`
-  - `GET /team_stats?team=Dodgers&year=2022&type=pitching`
-- **Leaderboards:**
-  - `GET /leaderboard?stat=HR&season=2023&league=AL&type=batting`
-  - `GET /leaderboard?stat=ERA&season=2023&league=NL&type=pitching`
+Note: This is an MCP server designed to be used with MCP clients like Claude Desktop or through Smithery's interface.
 
-## API Documentation
-One up and running, interactive API docs are available at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+## Usage Examples
 
-## Publishing
-To expose an MCP STDIO interface instead of HTTP, first start the FastAPI server and then run the wrapper:
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 &
-python mcp_stdio_wrapper.py
+Once deployed and connected to an MCP client, you can use the tools like:
+
+```
+# Get player statistics
+get_player_stats("Mike Trout", "2024-04-01", "2024-10-01")
+
+# Get team batting stats
+get_team_stats("NYY", 2024, "batting")
+
+# Get home run leaderboard
+get_leaderboard("HR", 2024, "batting", 10)
+
+# Get hardest hit balls in July 2024
+statcast_leaderboard("2024-07-01", "2024-07-31", "home_run", 95.0, 10)
 ```
 
-This project is ready for deployment on Smithery or any other MCP-compatible platform. It uses the `pybaseballstats` library and its dependencies, including pandas and numpy.
+## Architecture
 
-## Listing available tools
-The server supports the MCP tool-discovery protocol. After starting the server, you can list available tools using either HTTP or the STDIO wrapper.
+- `server.py` - Main MCP server implementation using fastmcp
+- `smithery.yaml` - Smithery deployment configuration
+- `requirements.txt` - Python dependencies
+- `Dockerfile` - Container configuration for Smithery deployment
 
-**HTTP**
-```bash
-curl -X POST http://localhost:8000/tools/list
-```
-
-**STDIO**
-```bash
-echo '{"jsonrpc": "2.0", "method": "tools/list", "id": 1}' | python mcp_stdio_wrapper.py
-```
-
+The server uses lazy loading for heavy dependencies (pandas, numpy) to ensure fast startup times and avoid timeouts during tool discovery.
 
 ---
 
-**Powered by [pybaseballstats](https://pypi.org/project/pybaseballstats/) and FastAPI**
+**Powered by [pybaseballstats](https://pypi.org/project/pybaseballstats/) and [fastmcp](https://github.com/jlowin/fastmcp)**
