@@ -4,11 +4,11 @@ A Model Context Protocol (MCP) server that provides comprehensive MLB baseball s
 
 ## Overview
 
-This MCP server enables AI assistants to access real-time MLB statistics, historical data, and video highlights. It provides five powerful tools for querying baseball data, from individual player performance to team statistics and advanced Statcast metrics.
+This MCP server enables AI assistants to access real-time MLB statistics, historical data, and video highlights. It provides six powerful tools for querying baseball data, from individual player performance to team statistics and advanced Statcast metrics.
 
 ## Features
 
-### 🎯 5 Core Tools
+### 🎯 6 Core Tools
 
 #### 1. `get_player_stats`
 Get detailed Statcast data for any MLB player with optional date filtering.
@@ -73,6 +73,30 @@ Get fast team season averages for Statcast metrics. Optimized for queries like "
     - `"home_run"` - Home runs only
     - `"hit"` - All hits (singles, doubles, triples, home runs)
 - **Returns:** Team rankings with averages, counts, and other statistics
+- **Performance:** Uses sampling strategy (every 7th day) and 24-hour caching for instant responses
+
+#### 6. `team_pitching_stats`
+Get fast team pitching averages for Statcast metrics. Optimized for queries like "which team has the best pitching staff?".
+- **Parameters:**
+  - `year` (required): Season year (e.g., 2025)
+  - `stat` (optional): Metric to analyze
+    - `"velocity"` (default) - Average and max pitch velocity
+    - `"spin_rate"` - Average and max spin rate
+    - `"movement"` - Pitch break (horizontal, vertical, total)
+    - `"whiff_rate"` - Swing-and-miss percentage
+    - `"chase_rate"` - Swings at pitches outside the zone
+    - `"zone_rate"` - Percentage of pitches in strike zone
+    - `"ground_ball_rate"` - Ground balls per balls in play
+    - `"xera"` - Expected ERA based on quality of contact
+  - `pitch_type` (optional): Filter to specific pitch type
+    - `"FF"` - 4-seam fastball
+    - `"SL"` - Slider
+    - `"CH"` - Changeup
+    - `"CU"` - Curveball
+    - `"SI"` - Sinker
+    - `"FC"` - Cutter
+    - `"FS"` - Splitter
+- **Returns:** Team pitching rankings with averages, counts, and other statistics
 - **Performance:** Uses sampling strategy (every 7th day) and 24-hour caching for instant responses
 
 ### 🎥 Video Highlights Integration
@@ -245,6 +269,32 @@ Query: "What team hits the ball the farthest on average?"
 Tool: team_season_stats(2025, "distance")
 ```
 
+### Team Pitching Analysis (team_pitching_stats)
+```
+Query: "Which team throws the hardest in 2025?"
+Tool: team_pitching_stats(2025, "velocity")
+```
+
+```
+Query: "What team has the best slider spin rate?"
+Tool: team_pitching_stats(2025, "spin_rate", "SL")
+```
+
+```
+Query: "Which pitching staff gets the most swings and misses?"
+Tool: team_pitching_stats(2025, "whiff_rate")
+```
+
+```
+Query: "Show me teams with the highest ground ball rate"
+Tool: team_pitching_stats(2025, "ground_ball_rate")
+```
+
+```
+Query: "Which team has the lowest expected ERA based on contact quality?"
+Tool: team_pitching_stats(2025, "xera")
+```
+
 ## Technical Details
 
 ### Architecture
@@ -258,8 +308,8 @@ Tool: team_season_stats(2025, "distance")
 - **Query Chunking**: Automatically splits large date ranges into 5-day chunks to handle Baseball Savant's 30,000 row limit
 - **Response Caching**: 15-minute cache for repeated queries, 24-hour cache for team season stats
 - **Vectorized Operations**: Uses NumPy for efficient team identification instead of slower pandas apply() operations
-- **Sampling Strategy**: `team_season_stats` uses every 7th day sampling for full-season queries to avoid timeouts
-- **Specialized Tools**: Dedicated `team_season_stats` tool for common aggregate queries that would timeout with full data
+- **Sampling Strategy**: `team_season_stats` and `team_pitching_stats` use every 7th day sampling for full-season queries to avoid timeouts
+- **Specialized Tools**: Dedicated `team_season_stats` and `team_pitching_stats` tools for common aggregate queries that would timeout with full data
 - **Lazy Loading**: Heavy dependencies (pandas, numpy, pybaseball) loaded only when needed for fast startup
 - **Efficient Filtering**: Applies filters sequentially to minimize data processing overhead
 
