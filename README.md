@@ -215,11 +215,18 @@ Tool: statcast_leaderboard("2024-07-20", "2024-07-20", None, None, None, "pitch_
 - **Language**: Python 3.11+
 - **Deployment**: Docker container via Smithery
 
+### Performance Optimizations
+- **Query Chunking**: Automatically splits large date ranges into 5-day chunks to handle Baseball Savant's 30,000 row limit
+- **Response Caching**: 15-minute cache for repeated queries reduces API calls and improves response times
+- **Vectorized Operations**: Uses NumPy for efficient team identification instead of slower pandas apply() operations
+- **Lazy Loading**: Heavy dependencies (pandas, numpy, pybaseball) loaded only when needed for fast startup
+- **Efficient Filtering**: Applies filters sequentially to minimize data processing overhead
+
 ### Key Features
-- **Lazy Loading**: Heavy dependencies loaded only when needed for fast startup
 - **Error Handling**: Comprehensive error messages for common issues
 - **Type Safety**: Proper type conversion for JSON serialization
-- **Performance**: Optimized for quick responses with data caching
+- **Video Integration**: Automatic video highlight links for all plays and team top performances
+- **Smart Team Lookup**: Handles full names, abbreviations, cities, and historical teams
 
 ### File Structure
 ```

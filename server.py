@@ -2,8 +2,12 @@
 """MLB Stats MCP Server using fastmcp for Smithery deployment"""
 
 from fastmcp import FastMCP
-from typing import Optional
+from typing import Optional, Dict, Any, List
 import logging
+from datetime import datetime, timedelta
+import hashlib
+import json
+from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,6 +18,9 @@ mcp = FastMCP("mlb-stats-mcp")
 
 # Lazy loading for pybaseball
 pybaseball = None
+
+# Cache for statcast queries (15 minute TTL)
+query_cache = {}
 
 def load_pybaseball():
     """Lazy load pybaseball to avoid startup delays"""
@@ -31,6 +38,31 @@ def load_pybaseball():
             logger.error("Make sure pybaseball is installed: pip install pybaseball")
             raise ImportError("pybaseball library is not installed. Please install it with: pip install pybaseball")
     return pybaseball
+
+def chunk_date_range(start_date: str, end_date: str, max_days: int = 5) -> List[tuple]:
+    """Split date range into chunks to avoid API limits"""
+    start = datetime.strptime(start_date, '%Y-%m-%d')
+    end = datetime.strptime(end_date, '%Y-%m-%d')
+    chunks = []
+    
+    while start <= end:
+        chunk_end = min(start + timedelta(days=max_days - 1), end)
+        chunks.append((start.strftime('%Y-%m-%d'), chunk_end.strftime('%Y-%m-%d')))
+        start = chunk_end + timedelta(days=1)
+    
+    return chunks
+
+def get_cache_key(start_date: str, end_date: str, **kwargs) -> str:
+    """Generate cache key for query"""
+    key_data = f"{start_date}_{end_date}_{json.dumps(kwargs, sort_keys=True)}"
+    return hashlib.md5(key_data.encode()).hexdigest()
+
+def is_cache_valid(cache_entry: dict) -> bool:
+    """Check if cache entry is still valid (15 minute TTL)"""
+    if not cache_entry:
+        return False
+    cached_time = datetime.fromisoformat(cache_entry['timestamp'])
+    return (datetime.now() - cached_time).seconds < 900
 
 @mcp.tool()
 async def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> str:
@@ -291,34 +323,53 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         JSON string of statcast leaderboard
     """
     try:
+        # Check cache first
+        cache_key = get_cache_key(start_date, end_date, result=result, min_ev=min_ev, 
+                                 min_pitch_velo=min_pitch_velo, sort_by=sort_by, 
+                                 limit=limit, order=order, group_by=group_by)
+        
+        if cache_key in query_cache and is_cache_valid(query_cache[cache_key]):
+            logger.info(f"Using cached data for query {cache_key}")
+            return query_cache[cache_key]['data']
+        
         pb = load_pybaseball()
         
-        # Import statcast function from pybaseball
+        # Import statcast function and pandas
         from pybaseball import statcast
+        import pandas as pd
+        import numpy as np
         
         logger.info(f"Fetching statcast data for {start_date} to {end_date}")
         
-        # Get statcast data for date range
-        try:
-            data = statcast(start_dt=start_date, end_dt=end_date)
-        except Exception as e:
-            logger.error(f"Error fetching statcast data: {str(e)}")
-            return f"Error fetching data: {str(e)}. This might be due to network issues or invalid dates."
+        # Split into chunks for large date ranges
+        date_chunks = chunk_date_range(start_date, end_date)
+        all_data = []
         
-        if data.empty:
+        for chunk_start, chunk_end in date_chunks:
+            try:
+                logger.info(f"Fetching chunk: {chunk_start} to {chunk_end}")
+                chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
+                if not chunk_data.empty:
+                    all_data.append(chunk_data)
+            except Exception as e:
+                logger.error(f"Error fetching chunk {chunk_start} to {chunk_end}: {str(e)}")
+                continue
+        
+        if not all_data:
             return f"No statcast data found for date range {start_date} to {end_date}"
         
-        # Filter by result if specified
+        # Combine all chunks
+        data = pd.concat(all_data, ignore_index=True) if len(all_data) > 1 else all_data[0]
+        
+        # Apply filters efficiently
         if result:
             data = data[data['events'] == result]
             if data.empty:
                 return f"No {result} events found in the specified date range"
         
-        # Filter by minimum exit velocity
         if min_ev:
             data = data[data['launch_speed'] >= min_ev]
         
-        # Filter by minimum pitch velocity
         if min_pitch_velo:
             data = data[data['release_speed'] >= min_pitch_velo]
             if data.empty:
@@ -337,13 +388,12 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         }
         sort_column = sort_column_map.get(sort_by, 'launch_speed')
         
-        # Add team information for batting events
-        # For batting events, the batter's team is determined by whether they're home or away
-        # This requires checking the inning_topbot field
+        # Vectorized team identification (much faster than apply)
         if 'inning_topbot' in data.columns and 'home_team' in data.columns and 'away_team' in data.columns:
-            data['batting_team'] = data.apply(
-                lambda row: row['away_team'] if row['inning_topbot'] == 'Top' else row['home_team'],
-                axis=1
+            data['batting_team'] = np.where(
+                data['inning_topbot'] == 'Top',
+                data['away_team'],
+                data['home_team']
             )
         else:
             data['batting_team'] = 'Unknown'
@@ -382,9 +432,29 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
             
             team_stats = team_stats.sort_values(by=sort_col_for_team, ascending=(order.lower() == 'asc')).head(limit)
             
-            # Create team leaderboard
+            # Create team leaderboard with top highlights
             leaderboard = []
             for idx, (team, row) in enumerate(team_stats.iterrows()):
+                # Get top play for this team
+                team_data = data[data['batting_team'] == team]
+                if not team_data.empty:
+                    # Find the best play for this team based on sort criteria
+                    top_play = team_data.nlargest(1, sort_column).iloc[0]
+                    
+                    # Generate video links for the top play
+                    game_pk = top_play.get('game_pk')
+                    top_play_video = {}
+                    if game_pk:
+                        player_name = str(top_play.get('player_name', '')).replace(' ', '+')
+                        game_date = str(top_play.get('game_date', ''))
+                        top_play_video = {
+                            'player': str(top_play.get('player_name', 'Unknown')),
+                            'date': game_date,
+                            'game_highlights_url': f"https://www.mlb.com/gameday/{game_pk}/video",
+                            'film_room_search': f"https://www.mlb.com/video/search?q={player_name}+{game_date}" if player_name and game_date else None,
+                            'description': str(top_play.get('des', 'No description'))
+                        }
+                
                 entry = {
                     "rank": idx + 1,
                     "team": team,
@@ -397,12 +467,13 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                     "avg_spin_rate": float(row.get('release_spin_rate_mean', 0)) if 'release_spin_rate_mean' in row else None,
                     "avg_xba": float(row.get('estimated_ba_using_speedangle_mean', 0)) if 'estimated_ba_using_speedangle_mean' in row else None,
                     "avg_xwoba": float(row.get('estimated_woba_using_speedangle_mean', 0)) if 'estimated_woba_using_speedangle_mean' in row else None,
-                    "barrel_count": int(row.get('barrel_<lambda>', 0)) if 'barrel_<lambda>' in row else 0
+                    "barrel_count": int(row.get('barrel_<lambda>', 0)) if 'barrel_<lambda>' in row else 0,
+                    "top_play_video": top_play_video if top_play_video else None
                 }
                 leaderboard.append(entry)
             
-            import json
-            return json.dumps({
+            # Create response for team grouping
+            response = json.dumps({
                 "start_date": start_date,
                 "end_date": end_date,
                 "filter": {"result": result, "min_ev": min_ev, "min_pitch_velo": min_pitch_velo},
@@ -410,6 +481,14 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                 "group_by": "team",
                 "leaderboard": leaderboard
             }, indent=2, default=str)
+            
+            # Cache the result
+            query_cache[cache_key] = {
+                'data': response,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            return response
         
         # Remove rows with null values in sort column
         data = data.dropna(subset=[sort_column])
@@ -445,6 +524,7 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                 # MLB Stats API endpoint for game highlights
                 video_info['api_highlights_endpoint'] = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={game_pk}&hydrate=game(content(highlights(highlights)))"
             
+            # Always generate comprehensive video links when game_pk is available
             entry = {
                 "rank": idx + 1,
                 "player": str(row.get('player_name', 'Unknown')),
@@ -465,14 +545,22 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
             }
             leaderboard.append(entry)
         
-        import json
-        return json.dumps({
+        # Create response
+        response = json.dumps({
             "start_date": start_date,
             "end_date": end_date,
             "filter": {"result": result, "min_ev": min_ev, "min_pitch_velo": min_pitch_velo},
             "sorted_by": sort_by,
             "leaderboard": leaderboard
-        }, indent=2, default=str)  # default=str handles any remaining type issues
+        }, indent=2, default=str)
+        
+        # Cache the result
+        query_cache[cache_key] = {
+            'data': response,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        return response
         
     except Exception as e:
         logger.error(f"Error getting statcast leaderboard: {str(e)}")
