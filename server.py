@@ -644,6 +644,216 @@ async def team_pitching_stats(year: int, stat: str = "velocity", pitch_type: Opt
         return f"Error: {str(e)}"
 
 @mcp.tool()
+async def statcast_count(start_date: str, end_date: str, result_type: str = "home_run", 
+                        min_distance: Optional[float] = None, min_exit_velocity: Optional[float] = None,
+                        max_distance: Optional[float] = None, max_exit_velocity: Optional[float] = None) -> str:
+    """
+    Count Statcast events matching criteria. Optimized for multi-year queries like "how many 475+ ft home runs since 2023?"
+    
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format  
+        result_type: Type of result to count - 'home_run' (default), 'hit', 'batted_ball', or specific like 'double'
+        min_distance: Minimum distance in feet (e.g., 475 for long home runs)
+        min_exit_velocity: Minimum exit velocity in mph
+        max_distance: Maximum distance in feet
+        max_exit_velocity: Maximum exit velocity in mph
+    
+    Returns:
+        JSON with count, breakdown by year, and top examples
+    """
+    try:
+        # Special cache for counting queries (24-hour TTL)
+        cache_key = f"count_{start_date}_{end_date}_{result_type}_{min_distance}_{min_exit_velocity}_{max_distance}_{max_exit_velocity}"
+        
+        if cache_key in query_cache:
+            cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
+            if (datetime.now() - cached_time).seconds < 86400:  # 24 hour cache
+                logger.info(f"Using cached count data for {cache_key}")
+                return query_cache[cache_key]['data']
+        
+        pb = load_pybaseball()
+        from pybaseball import statcast
+        import pandas as pd
+        import numpy as np
+        
+        logger.info(f"Counting {result_type} from {start_date} to {end_date}")
+        
+        # For multi-year queries, use monthly sampling to avoid timeouts
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        end = datetime.strptime(end_date, '%Y-%m-%d')
+        days_span = (end - start).days
+        
+        # Determine sampling strategy based on date range
+        if days_span > 365:
+            # For multi-year, sample 3 days per month
+            sample_days = [1, 15, 28]
+        elif days_span > 180:
+            # For 6-12 months, sample weekly
+            sample_days = list(range(1, 32, 7))
+        else:
+            # For < 6 months, use regular chunking
+            date_chunks = chunk_date_range(start_date, end_date)
+            all_data = []
+            
+            for chunk_start, chunk_end in date_chunks:
+                try:
+                    data = statcast(start_dt=chunk_start, end_dt=chunk_end)
+                    if not data.empty:
+                        all_data.append(data)
+                except Exception as e:
+                    logger.error(f"Error fetching chunk {chunk_start} to {chunk_end}: {str(e)}")
+                    continue
+            
+            if all_data:
+                data = pd.concat(all_data, ignore_index=True)
+            else:
+                data = pd.DataFrame()
+        
+        # For long date ranges, use sampling
+        if days_span > 180:
+            all_data = []
+            current = start
+            
+            while current <= end:
+                year = current.year
+                month = current.month
+                
+                for day in sample_days:
+                    try:
+                        # Create valid date
+                        sample_date = datetime(year, month, min(day, 28 if month == 2 else 30 if month in [4,6,9,11] else 31))
+                        if sample_date > end:
+                            break
+                        if sample_date < start:
+                            continue
+                            
+                        date_str = sample_date.strftime('%Y-%m-%d')
+                        logger.info(f"Sampling {date_str}")
+                        
+                        sample_data = statcast(start_dt=date_str, end_dt=date_str)
+                        if not sample_data.empty:
+                            all_data.append(sample_data)
+                    except Exception as e:
+                        logger.error(f"Error sampling {year}-{month}-{day}: {str(e)}")
+                        continue
+                
+                # Move to next month
+                if month == 12:
+                    current = datetime(year + 1, 1, 1)
+                else:
+                    current = datetime(year, month + 1, 1)
+            
+            if all_data:
+                data = pd.concat(all_data, ignore_index=True)
+            else:
+                data = pd.DataFrame()
+        
+        if data.empty:
+            return json.dumps({"error": "No data found for the specified date range"})
+        
+        # Apply filters
+        if result_type == 'home_run':
+            data = data[data['events'] == 'home_run']
+        elif result_type == 'hit':
+            data = data[data['events'].isin(['single', 'double', 'triple', 'home_run'])]
+        elif result_type == 'batted_ball':
+            data = data[data['type'] == 'X']
+        else:
+            data = data[data['events'] == result_type]
+        
+        if min_distance:
+            data = data[data['hit_distance_sc'] >= min_distance]
+        if max_distance:
+            data = data[data['hit_distance_sc'] <= max_distance]
+        if min_exit_velocity:
+            data = data[data['launch_speed'] >= min_exit_velocity]
+        if max_exit_velocity:
+            data = data[data['launch_speed'] <= max_exit_velocity]
+        
+        # Calculate scaling factor for sampled data
+        if days_span > 180:
+            # Estimate total based on sampling
+            sample_size = len(all_data)
+            if days_span > 365:
+                # 3 days per month sampling
+                months_span = days_span / 30.4
+                expected_samples = months_span * 3
+                scaling_factor = days_span / expected_samples
+            else:
+                # Weekly sampling
+                scaling_factor = 7
+        else:
+            scaling_factor = 1
+        
+        # Get counts
+        total_count = len(data)
+        estimated_total = int(total_count * scaling_factor)
+        
+        # Breakdown by year
+        data['year'] = pd.to_datetime(data['game_date']).dt.year
+        yearly_counts = data.groupby('year').size()
+        yearly_breakdown = {
+            str(year): int(count * scaling_factor) 
+            for year, count in yearly_counts.items()
+        }
+        
+        # Get top examples
+        examples = []
+        if not data.empty:
+            # Sort by distance for home runs, exit velocity for others
+            sort_col = 'hit_distance_sc' if result_type == 'home_run' and 'hit_distance_sc' in data.columns else 'launch_speed'
+            top_data = data.nlargest(5, sort_col)
+            
+            for _, row in top_data.iterrows():
+                example = {
+                    'player': str(row.get('player_name', 'Unknown')),
+                    'date': str(row.get('game_date', 'Unknown')),
+                    'distance': float(row.get('hit_distance_sc')) if pd.notna(row.get('hit_distance_sc')) else None,
+                    'exit_velocity': float(row.get('launch_speed')) if pd.notna(row.get('launch_speed')) else None,
+                    'team': str(row.get('batting_team', 'Unknown'))
+                }
+                
+                # Add video links if available
+                game_pk = row.get('game_pk')
+                if game_pk:
+                    example['video_url'] = f"https://www.mlb.com/gameday/{game_pk}/video"
+                
+                examples.append(example)
+        
+        # Create response
+        response = {
+            'start_date': start_date,
+            'end_date': end_date,
+            'filters': {
+                'result_type': result_type,
+                'min_distance': min_distance,
+                'max_distance': max_distance,
+                'min_exit_velocity': min_exit_velocity,
+                'max_exit_velocity': max_exit_velocity
+            },
+            'count': estimated_total,
+            'actual_sampled': total_count,
+            'sampling_note': f"Estimated from {sample_size} sampled days" if days_span > 180 else "Complete data",
+            'yearly_breakdown': yearly_breakdown,
+            'top_examples': examples
+        }
+        
+        response_json = json.dumps(response, indent=2, default=str)
+        
+        # Cache the result
+        query_cache[cache_key] = {
+            'data': response_json,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        return response_json
+        
+    except Exception as e:
+        logger.error(f"Error in statcast_count: {str(e)}")
+        return json.dumps({"error": str(e)})
+
+@mcp.tool()
 async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None, 
                              min_ev: Optional[float] = None, min_pitch_velo: Optional[float] = None,
                              sort_by: str = "exit_velocity", limit: int = 10, order: str = "desc",
