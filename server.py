@@ -12,27 +12,21 @@ logger = logging.getLogger(__name__)
 # Create the MCP server
 mcp = FastMCP("mlb-stats-mcp")
 
-# Lazy loading for pybaseballstats
+# Lazy loading for pybaseball
 pybaseball = None
 
 def load_pybaseball():
-    """Lazy load pybaseballstats to avoid startup delays"""
+    """Lazy load pybaseball to avoid startup delays"""
     global pybaseball
     if pybaseball is None:
         try:
-            import pybaseballstats as pb
+            import pybaseball as pb
             pybaseball = pb
-            logger.info("Successfully loaded pybaseballstats")
+            logger.info("Successfully loaded pybaseball")
             logger.info(f"Available functions: {[attr for attr in dir(pb) if not attr.startswith('_')]}")
         except ImportError:
-            try:
-                import pybaseball as pb
-                pybaseball = pb
-                logger.info("Successfully loaded pybaseball")
-                logger.info(f"Available functions: {[attr for attr in dir(pb) if not attr.startswith('_')]}")
-            except ImportError:
-                logger.error("Could not import pybaseballstats or pybaseball")
-                raise
+            logger.error("Could not import pybaseball")
+            raise
     return pybaseball
 
 @mcp.tool()
@@ -208,7 +202,8 @@ async def get_leaderboard(stat: str, season: int, leaderboard_type: str = "batti
 
 @mcp.tool()
 async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None, 
-                             min_ev: Optional[float] = None, limit: int = 10, order: str = "desc") -> str:
+                             min_ev: Optional[float] = None, min_pitch_velo: Optional[float] = None,
+                             limit: int = 10, order: str = "desc") -> str:
     """
     Get event-level Statcast leaderboard for a date range, filtered by result (e.g., home run) 
     and sorted by exit velocity, etc.
@@ -218,6 +213,7 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         end_date: End date in YYYY-MM-DD format
         result: Filter by result type, e.g., 'home_run' (optional)
         min_ev: Minimum exit velocity (optional)
+        min_pitch_velo: Minimum pitch velocity in mph (optional)
         limit: Number of results to return
         order: Sort order - 'asc' or 'desc'
     
@@ -246,6 +242,12 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         if min_ev:
             data = data[data['launch_speed'] >= min_ev]
         
+        # Filter by minimum pitch velocity
+        if min_pitch_velo:
+            data = data[data['release_speed'] >= min_pitch_velo]
+            if data.empty:
+                return f"No pitches found with velocity >= {min_pitch_velo} mph in the specified criteria"
+        
         # Sort by exit velocity
         ascending = (order.lower() == 'asc')
         sorted_data = data.sort_values(by='launch_speed', ascending=ascending).head(limit)
@@ -261,6 +263,8 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                 "launch_angle": row.get('launch_angle', None),
                 "distance": row.get('hit_distance_sc', None),
                 "result": row.get('events', None),
+                "pitch_velocity": row.get('release_speed', None),
+                "pitch_type": row.get('pitch_type', None),
                 "description": row.get('des', None)
             }
             leaderboard.append(entry)
