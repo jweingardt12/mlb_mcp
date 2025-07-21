@@ -269,8 +269,10 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                              min_ev: Optional[float] = None, min_pitch_velo: Optional[float] = None,
                              sort_by: str = "exit_velocity", limit: int = 10, order: str = "desc") -> str:
     """
-    Get event-level Statcast leaderboard for a date range, filtered by result (e.g., home run) 
-    and sorted by various metrics.
+    Get event-level Statcast leaderboard for a date range with advanced filtering and sorting.
+    
+    Supports sorting by exit velocity, distance, pitch velocity, spin rate, expected stats, and more.
+    Includes video highlight links for each result.
     
     Args:
         start_date: Start date in YYYY-MM-DD format
@@ -278,7 +280,8 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         result: Filter by result type, e.g., 'home_run' (optional)
         min_ev: Minimum exit velocity (optional)
         min_pitch_velo: Minimum pitch velocity in mph (optional)
-        sort_by: Metric to sort by - 'exit_velocity', 'distance', 'launch_angle' (default: 'exit_velocity')
+        sort_by: Metric to sort by - 'exit_velocity', 'distance', 'launch_angle', 'pitch_velocity', 
+                'spin_rate', 'xba', 'xwoba', 'barrel' (default: 'exit_velocity')
         limit: Number of results to return
         order: Sort order - 'asc' or 'desc'
     
@@ -323,7 +326,12 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         sort_column_map = {
             'exit_velocity': 'launch_speed',
             'distance': 'hit_distance_sc',
-            'launch_angle': 'launch_angle'
+            'launch_angle': 'launch_angle',
+            'pitch_velocity': 'release_speed',
+            'spin_rate': 'release_spin_rate',
+            'xba': 'estimated_ba_using_speedangle',
+            'xwoba': 'estimated_woba_using_speedangle',
+            'barrel': 'barrel'
         }
         sort_column = sort_column_map.get(sort_by, 'launch_speed')
         
@@ -371,6 +379,10 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                 "result": str(row.get('events', 'Unknown')),
                 "pitch_velocity": float(row.get('release_speed')) if row.get('release_speed') is not None else None,
                 "pitch_type": str(row.get('pitch_type', 'Unknown')),
+                "spin_rate": float(row.get('release_spin_rate')) if row.get('release_spin_rate') is not None else None,
+                "xba": float(row.get('estimated_ba_using_speedangle')) if row.get('estimated_ba_using_speedangle') is not None else None,
+                "xwoba": float(row.get('estimated_woba_using_speedangle')) if row.get('estimated_woba_using_speedangle') is not None else None,
+                "barrel": bool(row.get('barrel') == 1) if row.get('barrel') is not None else None,
                 "description": str(row.get('des', 'No description')),
                 "video_links": video_info if video_info else None
             }
