@@ -1,8 +1,10 @@
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
+# MCP framework
+fastmcp>=1.0.0
+
+# Baseball data library
 pybaseballstats==0.3.11
-requests==2.32.4
-pyyaml==6.0.2
-# Additional dependencies that might be needed
-python-multipart==0.0.16
-httpx==0.28.1
+
+# Core dependencies (will be lazy loaded)
+pandas>=2.0.0
+numpy>=1.24.0
+requests>=2.31.0
