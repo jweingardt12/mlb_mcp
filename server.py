@@ -23,10 +23,13 @@ def load_pybaseball():
             import pybaseball as pb
             pybaseball = pb
             logger.info("Successfully loaded pybaseball")
-            logger.info(f"Available functions: {[attr for attr in dir(pb) if not attr.startswith('_')]}")
-        except ImportError:
-            logger.error("Could not import pybaseball")
-            raise
+            # Log version if available
+            if hasattr(pb, '__version__'):
+                logger.info(f"pybaseball version: {pb.__version__}")
+        except ImportError as e:
+            logger.error(f"Could not import pybaseball: {str(e)}")
+            logger.error("Make sure pybaseball is installed: pip install pybaseball")
+            raise ImportError("pybaseball library is not installed. Please install it with: pip install pybaseball")
     return pybaseball
 
 @mcp.tool()
@@ -203,10 +206,10 @@ async def get_leaderboard(stat: str, season: int, leaderboard_type: str = "batti
 @mcp.tool()
 async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None, 
                              min_ev: Optional[float] = None, min_pitch_velo: Optional[float] = None,
-                             limit: int = 10, order: str = "desc") -> str:
+                             sort_by: str = "exit_velocity", limit: int = 10, order: str = "desc") -> str:
     """
     Get event-level Statcast leaderboard for a date range, filtered by result (e.g., home run) 
-    and sorted by exit velocity, etc.
+    and sorted by various metrics.
     
     Args:
         start_date: Start date in YYYY-MM-DD format
@@ -214,6 +217,7 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         result: Filter by result type, e.g., 'home_run' (optional)
         min_ev: Minimum exit velocity (optional)
         min_pitch_velo: Minimum pitch velocity in mph (optional)
+        sort_by: Metric to sort by - 'exit_velocity', 'distance', 'launch_angle' (default: 'exit_velocity')
         limit: Number of results to return
         order: Sort order - 'asc' or 'desc'
     
@@ -226,8 +230,14 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         # Import statcast function from pybaseball
         from pybaseball import statcast
         
+        logger.info(f"Fetching statcast data for {start_date} to {end_date}")
+        
         # Get statcast data for date range
-        data = statcast(start_dt=start_date, end_dt=end_date)
+        try:
+            data = statcast(start_dt=start_date, end_dt=end_date)
+        except Exception as e:
+            logger.error(f"Error fetching statcast data: {str(e)}")
+            return f"Error fetching data: {str(e)}. This might be due to network issues or invalid dates."
         
         if data.empty:
             return f"No statcast data found for date range {start_date} to {end_date}"
@@ -248,24 +258,38 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
             if data.empty:
                 return f"No pitches found with velocity >= {min_pitch_velo} mph in the specified criteria"
         
-        # Sort by exit velocity
+        # Determine sort column
+        sort_column_map = {
+            'exit_velocity': 'launch_speed',
+            'distance': 'hit_distance_sc',
+            'launch_angle': 'launch_angle'
+        }
+        sort_column = sort_column_map.get(sort_by, 'launch_speed')
+        
+        # Remove rows with null values in sort column
+        data = data.dropna(subset=[sort_column])
+        
+        if data.empty:
+            return f"No data available for sorting by {sort_by}"
+        
+        # Sort by specified metric
         ascending = (order.lower() == 'asc')
-        sorted_data = data.sort_values(by='launch_speed', ascending=ascending).head(limit)
+        sorted_data = data.sort_values(by=sort_column, ascending=ascending).head(limit)
         
         # Create leaderboard
         leaderboard = []
         for idx, row in sorted_data.iterrows():
             entry = {
                 "rank": idx + 1,
-                "player": row.get('player_name', 'Unknown'),
-                "date": row.get('game_date', 'Unknown'),
-                "exit_velocity": row.get('launch_speed', None),
-                "launch_angle": row.get('launch_angle', None),
-                "distance": row.get('hit_distance_sc', None),
-                "result": row.get('events', None),
-                "pitch_velocity": row.get('release_speed', None),
-                "pitch_type": row.get('pitch_type', None),
-                "description": row.get('des', None)
+                "player": str(row.get('player_name', 'Unknown')),
+                "date": str(row.get('game_date', 'Unknown')),
+                "exit_velocity": float(row.get('launch_speed')) if row.get('launch_speed') is not None else None,
+                "launch_angle": float(row.get('launch_angle')) if row.get('launch_angle') is not None else None,
+                "distance": float(row.get('hit_distance_sc')) if row.get('hit_distance_sc') is not None else None,
+                "result": str(row.get('events', 'Unknown')),
+                "pitch_velocity": float(row.get('release_speed')) if row.get('release_speed') is not None else None,
+                "pitch_type": str(row.get('pitch_type', 'Unknown')),
+                "description": str(row.get('des', 'No description'))
             }
             leaderboard.append(entry)
         
@@ -273,9 +297,10 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         return json.dumps({
             "start_date": start_date,
             "end_date": end_date,
-            "filter": {"result": result, "min_ev": min_ev},
+            "filter": {"result": result, "min_ev": min_ev, "min_pitch_velo": min_pitch_velo},
+            "sorted_by": sort_by,
             "leaderboard": leaderboard
-        }, indent=2)
+        }, indent=2, default=str)  # default=str handles any remaining type issues
         
     except Exception as e:
         logger.error(f"Error getting statcast leaderboard: {str(e)}")

@@ -15,8 +15,9 @@ This server exposes 4 tools for accessing MLB data:
 3. **get_leaderboard** - Get statistical leaderboards (HR, AVG, ERA, etc.)
    - Parameters: `stat` (required), `season` (required), `leaderboard_type` (optional), `limit` (optional)
    
-4. **statcast_leaderboard** - Get event-level Statcast data filtered by exit velocity, pitch velocity, result type, etc.
-   - Parameters: `start_date` (required), `end_date` (required), `result`, `min_ev`, `min_pitch_velo`, `limit`, `order` (optional)
+4. **statcast_leaderboard** - Get event-level Statcast data filtered and sorted by various metrics
+   - Parameters: `start_date` (required), `end_date` (required), `result`, `min_ev`, `min_pitch_velo`, `sort_by`, `limit`, `order` (optional)
+   - `sort_by` options: "exit_velocity" (default), "distance", "launch_angle"
 
 ## Deployment
 
@@ -60,11 +61,14 @@ get_team_stats("NYY", 2024, "batting")
 # Get home run leaderboard
 get_leaderboard("HR", 2024, "batting", 10)
 
-# Get hardest hit balls in July 2024
-statcast_leaderboard("2024-07-01", "2024-07-31", "home_run", 95.0, None, 10)
+# Get longest home runs today
+statcast_leaderboard("2024-07-20", "2024-07-20", "home_run", None, None, "distance", 5)
 
-# Get hardest hit balls on 99+ mph pitches
-statcast_leaderboard("2024-07-01", "2024-07-31", None, 0, 99.0, 10)
+# Get hardest hit balls in July 2024
+statcast_leaderboard("2024-07-01", "2024-07-31", None, 95.0, None, "exit_velocity", 10)
+
+# Get hardest hit balls on 99+ mph pitches last week
+statcast_leaderboard("2024-07-14", "2024-07-20", None, 0, 99.0, "exit_velocity", 10)
 ```
 
 ## Architecture
