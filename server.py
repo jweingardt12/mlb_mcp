@@ -340,6 +340,27 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         # Create leaderboard
         leaderboard = []
         for idx, row in sorted_data.iterrows():
+            # Get game_pk for video links
+            game_pk = row.get('game_pk')
+            
+            # Generate video-related URLs
+            video_info = {}
+            if game_pk:
+                # MLB.com game highlights page
+                video_info['game_highlights_url'] = f"https://www.mlb.com/gameday/{game_pk}/video"
+                
+                # MLB Film Room search URL for this player and date
+                player_name = str(row.get('player_name', '')).replace(' ', '+')
+                game_date = str(row.get('game_date', ''))
+                if player_name and game_date:
+                    video_info['film_room_search'] = f"https://www.mlb.com/video/search?q={player_name}+{game_date}"
+                
+                # Include game_pk for API access
+                video_info['game_pk'] = str(game_pk)
+                
+                # MLB Stats API endpoint for game highlights
+                video_info['api_highlights_endpoint'] = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={game_pk}&hydrate=game(content(highlights(highlights)))"
+            
             entry = {
                 "rank": idx + 1,
                 "player": str(row.get('player_name', 'Unknown')),
@@ -350,7 +371,8 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
                 "result": str(row.get('events', 'Unknown')),
                 "pitch_velocity": float(row.get('release_speed')) if row.get('release_speed') is not None else None,
                 "pitch_type": str(row.get('pitch_type', 'Unknown')),
-                "description": str(row.get('des', 'No description'))
+                "description": str(row.get('des', 'No description')),
+                "video_links": video_info if video_info else None
             }
             leaderboard.append(entry)
         

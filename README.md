@@ -18,6 +18,7 @@ This server exposes 4 tools for accessing MLB data:
 4. **statcast_leaderboard** - Get event-level Statcast data filtered and sorted by various metrics
    - Parameters: `start_date` (required), `end_date` (required), `result`, `min_ev`, `min_pitch_velo`, `sort_by`, `limit`, `order` (optional)
    - `sort_by` options: "exit_velocity" (default), "distance", "launch_angle"
+   - **Now includes video links!** Each result contains URLs to find highlight videos
 
 ## Deployment
 
@@ -79,6 +80,24 @@ statcast_leaderboard("2024-07-14", "2024-07-20", None, 0, 99.0, "exit_velocity",
 - `Dockerfile` - Container configuration for Smithery deployment
 
 The server uses lazy loading for heavy dependencies (pandas, numpy) to ensure fast startup times and avoid timeouts during tool discovery.
+
+## Video Highlights Feature
+
+The `statcast_leaderboard` tool now includes video links for each result:
+- **game_highlights_url** - Direct link to MLB.com game highlights page
+- **film_room_search** - Search link for the specific player and date
+- **game_pk** - Game ID for API access
+- **api_highlights_endpoint** - MLB Stats API endpoint for programmatic access
+
+Example video links in response:
+```json
+"video_links": {
+  "game_highlights_url": "https://www.mlb.com/gameday/745890/video",
+  "film_room_search": "https://www.mlb.com/video/search?q=Ronald+Acuna+Jr.+2024-07-20",
+  "game_pk": "745890",
+  "api_highlights_endpoint": "https://statsapi.mlb.com/api/v1/schedule?gamePk=745890&hydrate=game(content(highlights(highlights)))"
+}
+```
 
 ---
 
