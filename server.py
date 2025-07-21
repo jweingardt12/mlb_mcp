@@ -112,21 +112,82 @@ async def get_team_stats(team: str, year: int, stat_type: str = "batting") -> st
         # Import functions from pybaseball
         from pybaseball import team_batting, team_pitching
         
+        # Validate year
+        from datetime import datetime
+        current_year = datetime.now().year
+        if year < 1871 or year > current_year:
+            return f"Invalid year: {year}. Please use a year between 1871 and {current_year}"
+        
         # Get team stats
-        if stat_type.lower() == "batting":
-            data = team_batting(year)
-        elif stat_type.lower() == "pitching":
-            data = team_pitching(year)
-        else:
-            return f"Invalid stat_type: {stat_type}. Use 'batting' or 'pitching'"
+        logger.info(f"Fetching {stat_type} stats for {year}")
+        
+        try:
+            if stat_type.lower() == "batting":
+                data = team_batting(year)
+            elif stat_type.lower() == "pitching":
+                data = team_pitching(year)
+            else:
+                return f"Invalid stat_type: {stat_type}. Use 'batting' or 'pitching'"
+        except Exception as e:
+            logger.error(f"Error fetching team stats: {str(e)}")
+            return f"Error fetching {stat_type} stats for {year}: {str(e)}"
+        
+        # Team name to abbreviation mapping
+        team_mapping = {
+            'orioles': 'BAL', 'baltimore': 'BAL',
+            'red sox': 'BOS', 'boston': 'BOS',
+            'yankees': 'NYY', 'new york yankees': 'NYY',
+            'rays': 'TBR', 'tampa': 'TBR', 'tampa bay': 'TBR',
+            'blue jays': 'TOR', 'toronto': 'TOR',
+            'white sox': 'CHW', 'chicago white sox': 'CHW',
+            'guardians': 'CLE', 'cleveland': 'CLE', 'indians': 'CLE',
+            'tigers': 'DET', 'detroit': 'DET',
+            'royals': 'KCR', 'kansas city': 'KCR',
+            'twins': 'MIN', 'minnesota': 'MIN',
+            'astros': 'HOU', 'houston': 'HOU',
+            'angels': 'LAA', 'los angeles angels': 'LAA',
+            'athletics': 'OAK', 'oakland': 'OAK', 'as': 'OAK',
+            'mariners': 'SEA', 'seattle': 'SEA',
+            'rangers': 'TEX', 'texas': 'TEX',
+            'braves': 'ATL', 'atlanta': 'ATL',
+            'marlins': 'MIA', 'miami': 'MIA', 'florida': 'FLA',
+            'mets': 'NYM', 'new york mets': 'NYM',
+            'phillies': 'PHI', 'philadelphia': 'PHI',
+            'nationals': 'WSN', 'washington': 'WSN', 'expos': 'MON',
+            'cubs': 'CHC', 'chicago cubs': 'CHC',
+            'reds': 'CIN', 'cincinnati': 'CIN',
+            'brewers': 'MIL', 'milwaukee': 'MIL',
+            'pirates': 'PIT', 'pittsburgh': 'PIT',
+            'cardinals': 'STL', 'st louis': 'STL', 'st. louis': 'STL',
+            'diamondbacks': 'ARI', 'arizona': 'ARI', 'dbacks': 'ARI',
+            'rockies': 'COL', 'colorado': 'COL',
+            'dodgers': 'LAD', 'los angeles dodgers': 'LAD',
+            'padres': 'SDP', 'san diego': 'SDP',
+            'giants': 'SFG', 'san francisco': 'SFG'
+        }
         
         # Find the team
         import pandas as pd
-        team_upper = team.upper()
-        team_data = data[data['Team'].str.contains(team_upper, case=False, na=False)]
+        
+        # Try to find team abbreviation
+        team_lower = team.lower()
+        team_abbr = team_mapping.get(team_lower, team.upper())
+        
+        # Try exact match first
+        team_data = data[data['Team'] == team_abbr]
+        
+        # If not found, try contains search
+        if team_data.empty:
+            team_data = data[data['Team'].str.contains(team_abbr, case=False, na=False)]
+        
+        # If still not found, try original team name
+        if team_data.empty:
+            team_data = data[data['Team'].str.contains(team, case=False, na=False)]
         
         if team_data.empty:
-            return f"No data found for team '{team}' in {year}"
+            # List available teams
+            available_teams = data['Team'].unique().tolist()
+            return f"No data found for team '{team}' in {year}. Available teams: {', '.join(sorted(available_teams))}"
         
         # Convert to dict and format
         result = team_data.iloc[0].to_dict()
