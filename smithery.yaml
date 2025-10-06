@@ -9,6 +9,7 @@ tags: ["sports", "baseball", "mlb", "statistics"]
 
 # Build configuration
 build:
+  dockerfile: Dockerfile
   dockerBuildPath: .
 startCommand:
   type: stdio
