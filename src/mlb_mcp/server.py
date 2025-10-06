@@ -2,7 +2,7 @@
 """MLB Stats MCP Server using fastmcp for Smithery deployment"""
 
 from fastmcp import FastMCP
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import logging
 from datetime import datetime, timedelta
 import hashlib
@@ -64,6 +64,8 @@ TEAM_ALIASES.update({abbr.lower(): abbr for abbr in set(TEAM_ALIASES.values())})
 
 SEARCH_RESULT_CACHE_LIMIT = 256
 search_result_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+SEARCH_CAPABILITY_KEY = "search"
+SEARCH_CAPABILITY_VERSION = "2025-09-16"
 
 
 def _store_search_result_cache(result_id: str, payload: Dict[str, Any]) -> None:
@@ -83,8 +85,12 @@ def resolve_team_alias(team: str) -> str:
     return TEAM_ALIASES.get(team.lower(), team.upper())
 
 
-def generate_search_candidates(query_text: str, limit_value: int) -> List[Dict[str, Any]]:
-    """Generate connector-compliant search candidates for a natural language query."""
+def generate_search_candidates(query_text: str, limit_value: int) -> Tuple[int, List[Dict[str, Any]]]:
+    """Generate connector-compliant search candidates for a natural language query.
+
+    Returns:
+        A tuple of (year_context, list_of_candidate_dicts)
+    """
     results: List[Dict[str, Any]] = []
     normalized_query = query_text.lower().strip()
     normalized_words = set(re.findall(r"[a-z0-9/\\+]+", normalized_query))
@@ -291,7 +297,7 @@ def generate_search_candidates(query_text: str, limit_value: int) -> List[Dict[s
             parameters={}
         )
 
-    return results[:limit_value]
+    return year_context, results[:limit_value]
 
 def load_pybaseball():
     """Lazy load pybaseball to avoid startup delays"""
@@ -422,6 +428,30 @@ def create_server():
     # Create the MCP server
     mcp = FastMCP("mlb-stats-mcp")
 
+    original_create_init = mcp._mcp_server.create_initialization_options
+
+    def create_init_with_search_capability(
+        notification_options=None,
+        experimental_capabilities: Optional[Dict[str, Dict[str, Any]]] = None,
+        **kwargs: Any,
+    ):
+        experimental_capabilities = experimental_capabilities or {}
+        experimental_capabilities.setdefault(
+            SEARCH_CAPABILITY_KEY,
+            {
+                "version": SEARCH_CAPABILITY_VERSION,
+                "displayName": "MLB MCP Search",
+                "supportsBatch": True,
+            },
+        )
+        return original_create_init(
+            notification_options=notification_options,
+            experimental_capabilities=experimental_capabilities,
+            **kwargs,
+        )
+
+    mcp._mcp_server.create_initialization_options = create_init_with_search_capability
+
     @mcp.tool()
     async def search(queries: Optional[List[Dict[str, Any]]] = None, limit: Optional[Any] = None) -> str:
         """
@@ -436,7 +466,7 @@ def create_server():
         except (ValueError, TypeError):
             limit_value = 5
 
-        aggregated_results: List[Dict[str, Any]] = []
+        aggregated_query_results: List[Dict[str, Any]] = []
 
         for query_obj in queries:
             if not isinstance(query_obj, dict):
@@ -445,7 +475,8 @@ def create_server():
             if not query_text:
                 continue
 
-            candidates = generate_search_candidates(query_text, limit_value)
+            year_context, candidates = generate_search_candidates(query_text, limit_value)
+            structured_results: List[Dict[str, Any]] = []
             for candidate in candidates:
                 candidate["query"] = query_text
                 cache_payload = {
@@ -458,10 +489,40 @@ def create_server():
                     "timestamp": datetime.now().isoformat()
                 }
                 _store_search_result_cache(candidate["id"], cache_payload)
-            aggregated_results.extend(candidates)
+                tool_name = candidate.get("metadata", {}).get("tool")
+                tool_parameters = candidate.get("metadata", {}).get("parameters") or {}
+                actions = []
+                if tool_name:
+                    actions.append(
+                        {
+                            "type": "tool",
+                            "toolName": tool_name,
+                            "arguments": tool_parameters,
+                        }
+                    )
+
+                structured_results.append(
+                    {
+                        "id": candidate["id"],
+                        "title": candidate.get("title"),
+                        "snippet": candidate.get("snippet"),
+                        "url": candidate.get("url"),
+                        "score": candidate.get("score"),
+                        "metadata": candidate.get("metadata"),
+                        "actions": actions,
+                        "year": year_context,
+                    }
+                )
+
+            aggregated_query_results.append(
+                {
+                    "query": query_text,
+                    "results": structured_results,
+                }
+            )
 
         response = {
-            "results": aggregated_results
+            "results": aggregated_query_results
         }
         return json.dumps(response, indent=2, default=str)
 
@@ -659,7 +720,7 @@ def create_server():
 
         return json.dumps({"results": results}, indent=2, default=str)
 
-    @mcp.tool()
+    @mcp.tool(name="get_player_stats", description="Fetch player Statcast summary stats")
     async def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> str:
         """
         Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)
@@ -723,7 +784,7 @@ def create_server():
             logger.error(f"Error getting player stats: {str(e)}")
             return f"Error: {str(e)}"
     
-    @mcp.tool()
+    @mcp.tool(name="get_team_stats", description="Fetch team batting or pitching totals for a season")
     async def get_team_stats(team: str, year: Any, stat_type: str = "batting") -> str:
         """
         Get team stats for a given team and year. Type can be 'batting' or 'pitching'
@@ -804,7 +865,7 @@ def create_server():
             logger.error(f"Error getting team stats: {str(e)}")
             return f"Error: {str(e)}"
     
-    @mcp.tool()
+    @mcp.tool(name="get_leaderboard", description="Get MLB leaderboard for a stat and season")
     async def get_leaderboard(stat: str, season: Any, leaderboard_type: str = "batting", limit: Any = 10) -> str:
         """
         Get leaderboard for a given stat and season
