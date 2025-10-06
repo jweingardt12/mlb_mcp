@@ -173,8 +173,9 @@ async def get_player_stats(name: str, start_date: Optional[str] = None, end_date
         results = playerid_lookup(last_name, first_name)
         if results.empty:
             return f"No player found matching '{name}'"
-        
-        player_id = results.iloc[0]['key_fangraphs']
+
+        # Use mlbam ID for statcast queries (not fangraphs)
+        player_id = results.iloc[0]['key_mlbam']
         
         # Get statcast data
         import pandas as pd
@@ -741,21 +742,24 @@ async def team_pitching_stats(year: Any, stat: str = "velocity", pitch_type: Opt
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def statcast_count(start_date: str, end_date: str, result_type: str = "home_run", 
+async def statcast_count(start_date: str, end_date: str, result_type: str = "home_run",
                         min_distance: Optional[Any] = None, min_exit_velocity: Optional[Any] = None,
-                        max_distance: Optional[Any] = None, max_exit_velocity: Optional[Any] = None) -> str:
+                        max_distance: Optional[Any] = None, max_exit_velocity: Optional[Any] = None,
+                        player_name: Optional[str] = None, pitch_type: Optional[str] = None) -> str:
     """
     Count Statcast events matching criteria. Optimized for multi-year queries like "how many 475+ ft home runs since 2023?"
-    
+
     Args:
         start_date: Start date in YYYY-MM-DD format
-        end_date: End date in YYYY-MM-DD format  
+        end_date: End date in YYYY-MM-DD format
         result_type: Type of result to count - 'home_run' (default), 'hit', 'batted_ball', or specific like 'double'
         min_distance: Minimum distance in feet (e.g., 475 for long home runs)
         min_exit_velocity: Minimum exit velocity in mph
         max_distance: Maximum distance in feet
         max_exit_velocity: Maximum exit velocity in mph
-    
+        player_name: Filter by batter name (e.g., 'Aaron Judge', 'Mike Trout')
+        pitch_type: Filter by pitch type - 'FF' (4-seam), 'SL' (slider), 'CH' (changeup), 'CU' (curveball), 'SI' (sinker), 'FC' (cutter), 'FS' (splitter)
+
     Returns:
         JSON with count, breakdown by year, and top examples
     """
@@ -769,9 +773,34 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
             min_exit_velocity = float(min_exit_velocity)
         if max_exit_velocity is not None:
             max_exit_velocity = float(max_exit_velocity)
-        
+
+        # Look up player ID if player_name is provided
+        player_id = None
+        if player_name:
+            try:
+                pb = load_pybaseball()
+                from pybaseball import playerid_lookup
+
+                last_name = player_name.split()[-1]
+                first_name = player_name.split()[0] if len(player_name.split()) > 1 else ''
+                results = playerid_lookup(last_name, first_name)
+
+                if results.empty:
+                    return json.dumps({
+                        "error": f"No player found matching '{player_name}'",
+                        "suggestion": "Please check the player name spelling"
+                    })
+
+                # Use mlbam ID for statcast queries
+                player_id = results.iloc[0]['key_mlbam']
+                logger.info(f"Found player ID {player_id} for {player_name}")
+
+            except Exception as e:
+                logger.error(f"Error looking up player: {str(e)}")
+                return json.dumps({"error": f"Error looking up player: {str(e)}"})
+
         # Special cache for counting queries (24-hour TTL)
-        cache_key = f"count_{start_date}_{end_date}_{result_type}_{min_distance}_{min_exit_velocity}_{max_distance}_{max_exit_velocity}"
+        cache_key = f"count_{start_date}_{end_date}_{result_type}_{min_distance}_{min_exit_velocity}_{max_distance}_{max_exit_velocity}_{player_id}_{pitch_type}"
         
         if cache_key in query_cache:
             cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
@@ -808,7 +837,15 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
                             chunk_data = chunk_data[chunk_data['events'].isin(['single', 'double', 'triple', 'home_run'])]
                         else:
                             chunk_data = chunk_data[chunk_data['events'] == result_type]
-                    
+
+                    # Apply player filter
+                    if player_id:
+                        chunk_data = chunk_data[chunk_data['batter'] == player_id]
+
+                    # Apply pitch type filter
+                    if pitch_type:
+                        chunk_data = chunk_data[chunk_data['pitch_type'] == pitch_type]
+
                     # Apply distance and exit velocity filters
                     if min_distance:
                         chunk_data = chunk_data[chunk_data['hit_distance_sc'] >= min_distance]
@@ -848,6 +885,8 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
                 "yearly_breakdown": {},
                 "filters": {
                     "result_type": result_type,
+                    "player_name": player_name,
+                    "pitch_type": pitch_type,
                     "min_distance": min_distance,
                     "max_distance": max_distance,
                     "min_exit_velocity": min_exit_velocity,
@@ -883,12 +922,21 @@ async def statcast_count(start_date: str, end_date: str, result_type: str = "hom
                 examples.append(example)
         
         # Create response
+        query_desc = f"Count of {result_type or 'all events'}"
+        if player_name:
+            query_desc += f" for {player_name}"
+        if pitch_type:
+            query_desc += f" on {pitch_type} pitches"
+        query_desc += f" from {start_date} to {end_date}"
+
         response = {
-            'query': f"Count of {result_type or 'all events'} from {start_date} to {end_date}",
+            'query': query_desc,
             'start_date': start_date,
             'end_date': end_date,
             'filters': {
                 'result_type': result_type,
+                'player_name': player_name,
+                'pitch_type': pitch_type,
                 'min_distance': min_distance,
                 'max_distance': max_distance,
                 'min_exit_velocity': min_exit_velocity,
@@ -1082,36 +1130,65 @@ async def top_home_runs(year_start: Any = 2023, year_end: Optional[Any] = None,
         return f"Error: {str(e)}"
 
 @mcp.tool()
-async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None, 
+async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None,
                              min_ev: Optional[float] = None, min_pitch_velo: Optional[float] = None,
                              sort_by: str = "exit_velocity", limit: int = 10, order: str = "desc",
-                             group_by: Optional[str] = None) -> str:
+                             group_by: Optional[str] = None, pitch_type: Optional[str] = None,
+                             player_name: Optional[str] = None) -> str:
     """
     Get event-level Statcast leaderboard for a date range with advanced filtering and sorting.
-    
+
     Supports sorting by exit velocity, distance, pitch velocity, spin rate, expected stats, and more.
     Includes video highlight links for each result.
-    
+
     Args:
         start_date: Start date in YYYY-MM-DD format
         end_date: End date in YYYY-MM-DD format
         result: Filter by result type, e.g., 'home_run' (optional)
         min_ev: Minimum exit velocity (optional)
         min_pitch_velo: Minimum pitch velocity in mph (optional)
-        sort_by: Metric to sort by - 'exit_velocity', 'distance', 'launch_angle', 'pitch_velocity', 
+        sort_by: Metric to sort by - 'exit_velocity', 'distance', 'launch_angle', 'pitch_velocity',
                 'spin_rate', 'xba', 'xwoba', 'barrel' (default: 'exit_velocity')
         limit: Number of results to return
         order: Sort order - 'asc' or 'desc'
         group_by: Group results by 'team' for team-wide rankings (optional)
-    
+        pitch_type: Filter by pitch type - 'FF' (4-seam), 'SL' (slider), 'CH' (changeup), 'CU' (curveball), 'SI' (sinker), 'FC' (cutter), 'FS' (splitter) (optional)
+        player_name: Filter by batter name (e.g., 'Aaron Judge', 'Mike Trout') (optional)
+
     Returns:
         JSON string of statcast leaderboard
     """
     try:
+        # Look up player ID if player_name is provided
+        player_id = None
+        if player_name:
+            try:
+                pb = load_pybaseball()
+                from pybaseball import playerid_lookup
+
+                last_name = player_name.split()[-1]
+                first_name = player_name.split()[0] if len(player_name.split()) > 1 else ''
+                results = playerid_lookup(last_name, first_name)
+
+                if results.empty:
+                    return json.dumps({
+                        "error": f"No player found matching '{player_name}'",
+                        "suggestion": "Please check the player name spelling"
+                    })
+
+                # Use mlbam ID for statcast queries
+                player_id = results.iloc[0]['key_mlbam']
+                logger.info(f"Found player ID {player_id} for {player_name}")
+
+            except Exception as e:
+                logger.error(f"Error looking up player: {str(e)}")
+                return json.dumps({"error": f"Error looking up player: {str(e)}"})
+
         # Check cache first
-        cache_key = get_cache_key(start_date, end_date, result=result, min_ev=min_ev, 
-                                 min_pitch_velo=min_pitch_velo, sort_by=sort_by, 
-                                 limit=limit, order=order, group_by=group_by)
+        cache_key = get_cache_key(start_date, end_date, result=result, min_ev=min_ev,
+                                 min_pitch_velo=min_pitch_velo, sort_by=sort_by,
+                                 limit=limit, order=order, group_by=group_by,
+                                 pitch_type=pitch_type, player_id=player_id)
         
         if cache_key in query_cache and is_cache_valid(query_cache[cache_key]):
             logger.info(f"Using cached data for query {cache_key}")
@@ -1171,6 +1248,18 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
             data = data[data['release_speed'] >= min_pitch_velo]
             if data.empty:
                 return f"No pitches found with velocity >= {min_pitch_velo} mph in the specified criteria"
+
+        # Apply pitch type filter
+        if pitch_type:
+            data = data[data['pitch_type'] == pitch_type]
+            if data.empty:
+                return f"No {pitch_type} pitches found in the specified criteria"
+
+        # Apply player filter
+        if player_id:
+            data = data[data['batter'] == player_id]
+            if data.empty:
+                return f"No data found for {player_name} in the specified criteria"
         
         # Determine sort column
         sort_column_map = {
@@ -1273,7 +1362,13 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
             response = json.dumps({
                 "start_date": start_date,
                 "end_date": end_date,
-                "filter": {"result": result, "min_ev": min_ev, "min_pitch_velo": min_pitch_velo},
+                "filter": {
+                    "result": result,
+                    "min_ev": min_ev,
+                    "min_pitch_velo": min_pitch_velo,
+                    "pitch_type": pitch_type,
+                    "player_name": player_name
+                },
                 "sorted_by": sort_by,
                 "group_by": "team",
                 "leaderboard": leaderboard
@@ -1347,7 +1442,13 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
         response = json.dumps({
             "start_date": start_date,
             "end_date": end_date,
-            "filter": {"result": result, "min_ev": min_ev, "min_pitch_velo": min_pitch_velo},
+            "filter": {
+                "result": result,
+                "min_ev": min_ev,
+                "min_pitch_velo": min_pitch_velo,
+                "pitch_type": pitch_type,
+                "player_name": player_name
+            },
             "sorted_by": sort_by,
             "leaderboard": leaderboard
         }, indent=2, default=str)
@@ -1363,6 +1464,162 @@ async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[
     except Exception as e:
         logger.error(f"Error getting statcast leaderboard: {str(e)}")
         return f"Error: {str(e)}"
+
+@mcp.tool()
+async def player_statcast(player_name: str, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                         pitch_type: Optional[str] = None, result_type: Optional[str] = None,
+                         min_exit_velocity: Optional[Any] = None, min_distance: Optional[Any] = None) -> str:
+    """
+    Get comprehensive Statcast data for a specific player with advanced filtering.
+
+    Args:
+        player_name: Player name (e.g., 'Aaron Judge', 'Shohei Ohtani')
+        start_date: Start date in YYYY-MM-DD format (optional, defaults to current season)
+        end_date: End date in YYYY-MM-DD format (optional, defaults to current season)
+        pitch_type: Filter by pitch type - 'FF' (4-seam), 'SL' (slider), 'CH' (changeup), 'CU' (curveball), 'SI' (sinker), 'FC' (cutter), 'FS' (splitter) (optional)
+        result_type: Filter by result - 'home_run', 'hit', 'single', 'double', 'triple', 'batted_ball' (optional)
+        min_exit_velocity: Minimum exit velocity in mph (optional)
+        min_distance: Minimum distance in feet (optional)
+
+    Returns:
+        JSON with player stats, counts by pitch type, and top examples
+    """
+    try:
+        # Convert string inputs to proper types
+        if min_exit_velocity is not None:
+            min_exit_velocity = float(min_exit_velocity)
+        if min_distance is not None:
+            min_distance = float(min_distance)
+
+        # Look up player ID
+        pb = load_pybaseball()
+        from pybaseball import playerid_lookup, statcast_batter
+        import pandas as pd
+
+        last_name = player_name.split()[-1]
+        first_name = player_name.split()[0] if len(player_name.split()) > 1 else ''
+        results = playerid_lookup(last_name, first_name)
+
+        if results.empty:
+            return json.dumps({
+                "error": f"No player found matching '{player_name}'",
+                "suggestion": "Please check the player name spelling"
+            })
+
+        player_id = results.iloc[0]['key_mlbam']
+        logger.info(f"Found player ID {player_id} for {player_name}")
+
+        # Set default date range if not provided
+        if not start_date or not end_date:
+            current_year = datetime.now().year
+            start_date = start_date or f"{current_year}-04-01"
+            end_date = end_date or datetime.now().strftime('%Y-%m-%d')
+
+        logger.info(f"Fetching statcast data for {player_name} from {start_date} to {end_date}")
+
+        # Fetch player statcast data
+        data = statcast_batter(start_date, end_date, player_id)
+
+        if data.empty:
+            return json.dumps({
+                "player": player_name,
+                "start_date": start_date,
+                "end_date": end_date,
+                "message": "No statcast data found for this player in the specified date range"
+            })
+
+        # Apply filters
+        filtered_data = data.copy()
+
+        if pitch_type:
+            filtered_data = filtered_data[filtered_data['pitch_type'] == pitch_type]
+
+        if result_type:
+            if result_type == 'batted_ball':
+                filtered_data = filtered_data[filtered_data['type'] == 'X']
+            elif result_type == 'hit':
+                filtered_data = filtered_data[filtered_data['events'].isin(['single', 'double', 'triple', 'home_run'])]
+            else:
+                filtered_data = filtered_data[filtered_data['events'] == result_type]
+
+        if min_exit_velocity:
+            filtered_data = filtered_data[filtered_data['launch_speed'] >= min_exit_velocity]
+
+        if min_distance:
+            filtered_data = filtered_data[filtered_data['hit_distance_sc'] >= min_distance]
+
+        # Calculate stats
+        total_events = len(filtered_data)
+
+        stats = {
+            "player": player_name,
+            "start_date": start_date,
+            "end_date": end_date,
+            "filters": {
+                "pitch_type": pitch_type,
+                "result_type": result_type,
+                "min_exit_velocity": min_exit_velocity,
+                "min_distance": min_distance
+            },
+            "total_events": total_events
+        }
+
+        if total_events == 0:
+            stats["message"] = "No events matching the specified criteria"
+            return json.dumps(stats, indent=2)
+
+        # Overall statistics
+        stats["overall_stats"] = {
+            "avg_exit_velocity": float(filtered_data['launch_speed'].mean()) if 'launch_speed' in filtered_data.columns else None,
+            "max_exit_velocity": float(filtered_data['launch_speed'].max()) if 'launch_speed' in filtered_data.columns else None,
+            "avg_distance": float(filtered_data['hit_distance_sc'].mean()) if 'hit_distance_sc' in filtered_data.columns else None,
+            "max_distance": float(filtered_data['hit_distance_sc'].max()) if 'hit_distance_sc' in filtered_data.columns else None,
+            "avg_launch_angle": float(filtered_data['launch_angle'].mean()) if 'launch_angle' in filtered_data.columns else None,
+            "barrel_count": int((filtered_data['barrel'] == 1).sum()) if 'barrel' in filtered_data.columns else 0,
+            "barrel_rate": float((filtered_data['barrel'] == 1).sum() / len(filtered_data) * 100) if 'barrel' in filtered_data.columns and len(filtered_data) > 0 else 0
+        }
+
+        # Breakdown by pitch type (if not already filtered by pitch type)
+        if not pitch_type and 'pitch_type' in filtered_data.columns:
+            pitch_type_counts = filtered_data['pitch_type'].value_counts().to_dict()
+            stats["by_pitch_type"] = {str(k): int(v) for k, v in pitch_type_counts.items()}
+
+        # Breakdown by result type (if not already filtered)
+        if not result_type and 'events' in filtered_data.columns:
+            result_counts = filtered_data['events'].value_counts().head(10).to_dict()
+            stats["by_result"] = {str(k): int(v) for k, v in result_counts.items()}
+
+        # Top examples (by exit velocity)
+        top_examples = []
+        if 'launch_speed' in filtered_data.columns:
+            top_data = filtered_data.nlargest(5, 'launch_speed')
+
+            for _, row in top_data.iterrows():
+                example = {
+                    'date': str(row.get('game_date', 'Unknown')),
+                    'result': str(row.get('events', 'Unknown')),
+                    'pitch_type': str(row.get('pitch_type', 'Unknown')),
+                    'pitcher': str(row.get('player_name', 'Unknown')),
+                    'exit_velocity': float(row.get('launch_speed')) if pd.notna(row.get('launch_speed')) else None,
+                    'launch_angle': float(row.get('launch_angle')) if pd.notna(row.get('launch_angle')) else None,
+                    'distance': float(row.get('hit_distance_sc')) if pd.notna(row.get('hit_distance_sc')) else None,
+                    'pitch_velocity': float(row.get('release_speed')) if pd.notna(row.get('release_speed')) else None
+                }
+
+                # Add video links
+                game_pk = row.get('game_pk')
+                if game_pk:
+                    example['video_url'] = f"https://www.mlb.com/gameday/{game_pk}/video"
+
+                top_examples.append(example)
+
+        stats["top_examples"] = top_examples
+
+        return json.dumps(stats, indent=2, default=str)
+
+    except Exception as e:
+        logger.error(f"Error in player_statcast: {str(e)}")
+        return json.dumps({"error": str(e)})
 
 def main():
     """Main entry point for the MCP server"""

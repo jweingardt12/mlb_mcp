@@ -4,11 +4,11 @@ A Model Context Protocol (MCP) server that provides comprehensive MLB baseball s
 
 ## Overview
 
-This MCP server enables AI assistants to access real-time MLB statistics, historical data, and video highlights. It provides seven powerful tools for querying baseball data, from individual player performance to team statistics and advanced Statcast metrics.
+This MCP server enables AI assistants to access real-time MLB statistics, historical data, and video highlights. It provides eight powerful tools for querying baseball data, from individual player performance to team statistics and advanced Statcast metrics.
 
 ## Features
 
-### 🎯 7 Core Tools
+### 🎯 8 Core Tools
 
 #### 1. `get_player_stats`
 Get detailed Statcast data for any MLB player with optional date filtering.
@@ -18,7 +18,23 @@ Get detailed Statcast data for any MLB player with optional date filtering.
   - `end_date` (optional): End date in YYYY-MM-DD format
 - **Returns:** Player statistics including hits, home runs, exit velocity, launch angle, and barrel rate
 
-#### 2. `get_team_stats`
+#### 2. `player_statcast`
+Get comprehensive Statcast data for a specific player with advanced pitch-type and result filtering.
+- **Parameters:**
+  - `player_name` (required): Player name (e.g., "Aaron Judge", "Mike Trout")
+  - `start_date` (optional): Start date in YYYY-MM-DD format (defaults to current season)
+  - `end_date` (optional): End date in YYYY-MM-DD format (defaults to current season)
+  - `pitch_type` (optional): Filter by pitch type - 'FF' (4-seam), 'SL' (slider), 'CH' (changeup), 'CU' (curveball), 'SI' (sinker), 'FC' (cutter), 'FS' (splitter)
+  - `result_type` (optional): Filter by result - 'home_run', 'hit', 'single', 'double', 'triple', 'batted_ball'
+  - `min_exit_velocity` (optional): Minimum exit velocity in mph
+  - `min_distance` (optional): Minimum distance in feet
+- **Returns:** Player stats with overall metrics, breakdown by pitch type/result, and top 5 examples with video links
+- **Example Queries:**
+  - "How many fastballs has Aaron Judge hit for a home run?"
+  - "What's Shohei Ohtani's average exit velocity on sliders?"
+  - "Show me Mike Trout's stats against breaking balls this season"
+
+#### 3. `get_team_stats`
 Retrieve comprehensive team batting or pitching statistics for any season.
 - **Parameters:**
   - `team` (required): Team name or abbreviation (e.g., "Yankees", "NYY", "Red Sox")
@@ -26,7 +42,7 @@ Retrieve comprehensive team batting or pitching statistics for any season.
   - `stat_type` (optional): "batting" (default) or "pitching"
 - **Returns:** Complete team statistics for the specified season
 
-#### 3. `get_leaderboard`
+#### 4. `get_leaderboard`
 Access statistical leaderboards for any MLB stat category.
 - **Parameters:**
   - `stat` (required): Statistic abbreviation (e.g., "HR", "AVG", "ERA", "K")
@@ -35,7 +51,7 @@ Access statistical leaderboards for any MLB stat category.
   - `limit` (optional): Number of results (default: 10)
 - **Returns:** Top players for the specified statistic
 
-#### 4. `statcast_leaderboard`
+#### 5. `statcast_leaderboard`
 Query advanced Statcast data with filtering, sorting, and video highlight links.
 - **Parameters:**
   - `start_date` (required): Start date in YYYY-MM-DD format
@@ -43,6 +59,8 @@ Query advanced Statcast data with filtering, sorting, and video highlight links.
   - `result` (optional): Filter by outcome (e.g., "home_run", "single", "double")
   - `min_ev` (optional): Minimum exit velocity filter
   - `min_pitch_velo` (optional): Minimum pitch velocity filter
+  - `pitch_type` (optional): Filter by pitch type - 'FF' (4-seam), 'SL' (slider), 'CH' (changeup), 'CU' (curveball), 'SI' (sinker), 'FC' (cutter), 'FS' (splitter)
+  - `player_name` (optional): Filter by batter name (e.g., "Aaron Judge", "Mike Trout")
   - `sort_by` (optional): Sort metric:
     - `"exit_velocity"` (default) - Hardest hit balls
     - `"distance"` - Longest hits
@@ -57,7 +75,7 @@ Query advanced Statcast data with filtering, sorting, and video highlight links.
   - `group_by` (optional): Group results by "team" for team-wide rankings
 - **Returns:** Detailed play-by-play data with video links (or team aggregations when group_by="team")
 
-#### 5. `team_season_stats`
+#### 6. `team_season_stats`
 Get fast team season averages for Statcast metrics. Optimized for queries like "which team hits the ball hardest?".
 - **Parameters:**
   - `year` (required): Season year (e.g., 2025)
@@ -75,7 +93,7 @@ Get fast team season averages for Statcast metrics. Optimized for queries like "
 - **Returns:** Team rankings with averages, counts, and other statistics
 - **Performance:** Uses sampling strategy (every 7th day) and 24-hour caching for instant responses
 
-#### 6. `team_pitching_stats`
+#### 7. `team_pitching_stats`
 Get fast team pitching averages for Statcast metrics. Optimized for queries like "which team has the best pitching staff?".
 - **Parameters:**
   - `year` (required): Season year (e.g., 2025)
@@ -99,12 +117,14 @@ Get fast team pitching averages for Statcast metrics. Optimized for queries like
 - **Returns:** Team pitching rankings with averages, counts, and other statistics
 - **Performance:** Uses sampling strategy (every 7th day) and 24-hour caching for instant responses
 
-#### 7. `statcast_count`
+#### 8. `statcast_count`
 Count Statcast events matching specific criteria. Optimized for multi-year queries like "how many 475+ ft home runs since 2023?"
 - **Parameters:**
   - `start_date` (required): Start date in YYYY-MM-DD format
   - `end_date` (required): End date in YYYY-MM-DD format
   - `result_type` (optional): Type to count - 'home_run' (default), 'hit', 'batted_ball', or specific like 'double'
+  - `player_name` (optional): Filter by batter name (e.g., "Aaron Judge", "Mike Trout")
+  - `pitch_type` (optional): Filter by pitch type - 'FF' (4-seam), 'SL' (slider), 'CH' (changeup), 'CU' (curveball), 'SI' (sinker), 'FC' (cutter), 'FS' (splitter)
   - `min_distance` (optional): Minimum distance in feet (e.g., 475)
   - `max_distance` (optional): Maximum distance in feet
   - `min_exit_velocity` (optional): Minimum exit velocity in mph
@@ -200,6 +220,28 @@ Add to your Claude Desktop configuration:
 ```
 
 ## Usage Examples
+
+### Player-Specific Queries (NEW!)
+
+#### How many fastballs has Aaron Judge hit for a home run?
+```
+Query: "How many fastballs has Aaron Judge hit for a home run this season?"
+Tool: player_statcast("Aaron Judge", "2024-04-01", "2024-10-31", "FF", "home_run")
+OR
+Tool: statcast_count("2024-04-01", "2024-10-31", "home_run", player_name="Aaron Judge", pitch_type="FF")
+```
+
+#### What's a player's performance on specific pitch types?
+```
+Query: "Show me Shohei Ohtani's stats against sliders this season"
+Tool: player_statcast("Shohei Ohtani", "2024-04-01", "2024-10-31", "SL")
+```
+
+#### Player's hardest hit balls on specific pitch types
+```
+Query: "Show Aaron Judge's hardest hit balls on fastballs"
+Tool: statcast_leaderboard("2024-04-01", "2024-10-31", player_name="Aaron Judge", pitch_type="FF", sort_by="exit_velocity", limit=10)
+```
 
 ### Find the Longest Home Runs
 ```
