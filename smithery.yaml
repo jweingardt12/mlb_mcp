@@ -12,8 +12,6 @@ build:
   dockerBuildPath: .
 startCommand:
   type: stdio
-  configSchema:
-    type: object
-  commandFunction:
-    |-
+  configSchema: {}
+  commandFunction: |-
     (config) => ({ command: 'python', args: ['server.py'] })
