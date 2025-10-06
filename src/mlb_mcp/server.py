@@ -110,7 +110,8 @@ def generate_search_candidates(query_text: str, limit_value: int) -> Tuple[int, 
     default_end = today.strftime('%Y-%m-%d') if year_context >= current_year else f"{year_context}-11-15"
 
     def add_result(result_id: str, title: str, snippet: str, tool: str, parameters: Dict[str, Any],
-                   score: float = 1.0, url: Optional[str] = None, metadata_extra: Optional[Dict[str, Any]] = None) -> None:
+                   score: float = 1.0, url: Optional[str] = None, metadata_extra: Optional[Dict[str, Any]] = None,
+                   prepend: bool = False) -> None:
         metadata = {
             "tool": tool,
             "parameters": parameters
@@ -125,7 +126,10 @@ def generate_search_candidates(query_text: str, limit_value: int) -> Tuple[int, 
             "url": url,
             "metadata": metadata
         }
-        results.append(candidate)
+        if prepend:
+            results.insert(0, candidate)
+        else:
+            results.append(candidate)
 
     # Player detection
     stop_words = {
@@ -259,6 +263,35 @@ def generate_search_candidates(query_text: str, limit_value: int) -> Tuple[int, 
             )
 
     # Statcast leaderboard / count heuristics
+    fastball_query = 'fastball' in normalized_query or 'fastballs' in normalized_query
+    if ('home run' in normalized_query or 'home runs' in normalized_query) and 'most' in normalized_query and fastball_query and any(token in normalized_query for token in ['95', '96', '97', '98', '99', '100']):
+        velocity_threshold = 95.0
+        try:
+            numbers = re.findall(r"(\d{2,3})\s*mph", query_text.lower())
+            if numbers:
+                velocity_threshold = float(numbers[0])
+        except Exception:
+            pass
+
+        snippet = f"Leaders in home runs on fastballs >= {velocity_threshold} mph for {year_context}."
+        add_result(
+            result_id=f"statcast_fastball_hr:{year_context}:{int(velocity_threshold)}",
+            title=f"Fastball HR leaders {year_context}",
+            snippet=snippet,
+            tool="statcast_leaderboard",
+            parameters={
+                "start_date": default_start,
+                "end_date": default_end,
+                "result": "home_run",
+                "min_pitch_velo": velocity_threshold,
+                "pitch_type": "FASTBALL",
+                "group_by": "player",
+                "sort_by": "count",
+                "limit": min(limit_value, 10)
+            },
+            prepend=True
+        )
+
     if len(results) < limit_value and ("statcast" in normalized_query or "exit velocity" in normalized_query or "launch angle" in normalized_query):
         snippet = f"Detailed Statcast leaderboard from {default_start} to {default_end}."
         add_result(
@@ -957,6 +990,10 @@ def create_server():
             
             pb = load_pybaseball()
             from pybaseball import statcast
+            try:
+                from pybaseball import statcast_homeruns
+            except ImportError:
+                statcast_homeruns = None
             import pandas as pd
             import numpy as np
             
@@ -1366,7 +1403,10 @@ def create_server():
             for i, (chunk_start, chunk_end) in enumerate(date_chunks, 1):
                 try:
                     logger.info(f"Fetching chunk {i}/{len(date_chunks)}: {chunk_start} to {chunk_end}")
-                    chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
+                    if result == 'home_run' and statcast_homeruns is not None:
+                        chunk_data = statcast_homeruns(start_dt=chunk_start, end_dt=chunk_end)
+                    else:
+                        chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
                     
                     if not chunk_data.empty:
                         # Apply filters immediately to reduce memory
@@ -1791,9 +1831,26 @@ def create_server():
     
             # Apply pitch type filter
             if pitch_type:
-                data = data[data['pitch_type'] == pitch_type]
+                import numpy as np
+                pitch_filter = None
+                if isinstance(pitch_type, str):
+                    pitch_type_upper = pitch_type.upper()
+                    if pitch_type_upper == 'FASTBALL':
+                        pitch_filter = ['FF', 'FA', 'FT', 'SI', 'FC']
+                    elif ',' in pitch_type_upper:
+                        pitch_filter = [code.strip() for code in pitch_type_upper.split(',') if code.strip()]
+                    else:
+                        pitch_filter = [pitch_type_upper]
+                elif isinstance(pitch_type, (list, tuple, set)):
+                    pitch_filter = [str(code).upper() for code in pitch_type]
+
+                if pitch_filter:
+                    data = data[data['pitch_type'].isin(pitch_filter)]
+                else:
+                    data = data[data['pitch_type'] == pitch_type]
+
                 if data.empty:
-                    return f"No {pitch_type} pitches found in the specified criteria"
+                    return f"No pitches matching pitch filter {pitch_type} found in the specified criteria"
     
             # Apply player filter
             if player_id:
@@ -1810,7 +1867,8 @@ def create_server():
                 'spin_rate': 'release_spin_rate',
                 'xba': 'estimated_ba_using_speedangle',
                 'xwoba': 'estimated_woba_using_speedangle',
-                'barrel': 'barrel'
+                'barrel': 'barrel',
+                'count': None,
             }
             sort_column = sort_column_map.get(sort_by, 'launch_speed')
             
@@ -1830,11 +1888,11 @@ def create_server():
                 import pandas as pd
                 import numpy as np
                 
-                # Remove rows with null values in sort column before grouping
-                data = data.dropna(subset=[sort_column])
-                
-                if data.empty:
-                    return f"No data available for sorting by {sort_by}"
+                # Remove rows with null values when applicable
+                if sort_column:
+                    data = data.dropna(subset=[sort_column])
+                    if data.empty:
+                        return f"No data available for sorting by {sort_by}"
                 
                 # Group by team and calculate statistics
                 team_stats = data.groupby('batting_team').agg({
@@ -1852,9 +1910,11 @@ def create_server():
                 team_stats.columns = ['_'.join(col).strip() for col in team_stats.columns.values]
                 
                 # Sort by the main metric
-                sort_col_mean = f"{sort_column}_mean"
-                sort_col_max = f"{sort_column}_max"
-                sort_col_for_team = sort_col_max if sort_by in ['distance', 'exit_velocity', 'pitch_velocity'] else sort_col_mean
+                sort_col_for_team = 'event_count'
+                if sort_by != 'count':
+                    sort_col_mean = f"{sort_column}_mean"
+                    sort_col_max = f"{sort_column}_max"
+                    sort_col_for_team = sort_col_max if sort_by in ['distance', 'exit_velocity', 'pitch_velocity'] else sort_col_mean
                 
                 team_stats = team_stats.sort_values(by=sort_col_for_team, ascending=(order.lower() == 'asc')).head(limit)
                 
@@ -1865,7 +1925,8 @@ def create_server():
                     team_data = data[data['batting_team'] == team]
                     if not team_data.empty:
                         # Find the best play for this team based on sort criteria
-                        top_play = team_data.nlargest(1, sort_column).iloc[0]
+                        sort_for_highlight = sort_column or 'launch_speed'
+                        top_play = team_data.nlargest(1, sort_for_highlight).iloc[0]
                         
                         # Generate video links for the top play
                         game_pk = top_play.get('game_pk')
@@ -1884,9 +1945,9 @@ def create_server():
                     entry = {
                         "rank": idx + 1,
                         "team": team,
-                        "count": int(row.get(f"{sort_column}_count", 0)),
-                        f"{sort_by}_avg": float(row.get(f"{sort_column}_mean", 0)),
-                        f"{sort_by}_max": float(row.get(f"{sort_column}_max", 0)),
+                        "count": int(row.get(f"{sort_column}_count", row.get('event_count', 0))),
+                        f"{sort_by}_avg": float(row.get(f"{sort_column}_mean", 0)) if sort_by != 'count' else None,
+                        f"{sort_by}_max": float(row.get(f"{sort_column}_max", 0)) if sort_by != 'count' else None,
                         "avg_exit_velocity": float(row.get('launch_speed_mean', 0)) if 'launch_speed_mean' in row else None,
                         "avg_distance": float(row.get('hit_distance_sc_mean', 0)) if 'hit_distance_sc_mean' in row else None,
                         "avg_pitch_velocity": float(row.get('release_speed_mean', 0)) if 'release_speed_mean' in row else None,
@@ -1920,6 +1981,126 @@ def create_server():
                     'timestamp': datetime.now().isoformat()
                 }
                 
+                return response
+
+            # Handle player grouping if requested
+            if group_by == 'player':
+                import pandas as pd
+                import numpy as np
+
+                if sort_column:
+                    data = data.dropna(subset=[sort_column])
+                    if data.empty:
+                        return f"No data available for sorting by {sort_by}"
+
+                data['player_display'] = data['batter_name'].where(data['batter_name'].notna(), data['batter'].apply(lambda x: f"Player {x}"))
+                data['player_id'] = data['batter']
+
+                # Aggregate by player
+                agg_config = {
+                    'launch_speed': ['mean', 'max'],
+                    'hit_distance_sc': 'mean',
+                    'release_speed': 'mean',
+                    'release_spin_rate': 'mean',
+                    'estimated_ba_using_speedangle': 'mean',
+                    'estimated_woba_using_speedangle': 'mean',
+                    'events': 'count'
+                }
+                if sort_column and sort_column not in agg_config:
+                    agg_config[sort_column] = ['mean', 'max']
+
+                player_stats = data.groupby(['player_id', 'player_display']).agg(agg_config).round(2)
+
+                player_stats.columns = ['_'.join(col).strip() for col in player_stats.columns.values]
+                player_stats = player_stats.rename(columns={
+                    'events_count': 'event_count',
+                    'launch_speed_mean': 'avg_exit_velocity',
+                    'launch_speed_max': 'max_exit_velocity',
+                    'hit_distance_sc_mean': 'avg_distance',
+                    'release_speed_mean': 'avg_pitch_velocity',
+                    'release_speed_max': 'max_pitch_velocity',
+                    'release_spin_rate_mean': 'avg_spin_rate',
+                    'estimated_ba_using_speedangle_mean': 'avg_xba',
+                    'estimated_woba_using_speedangle_mean': 'avg_xwoba'
+                })
+                if 'event_count' not in player_stats.columns and 'events_count' in player_stats.columns:
+                    player_stats['event_count'] = player_stats['events_count']
+
+                # Determine sorting column for players
+                if sort_by == 'count':
+                    player_stats = player_stats.sort_values(by='event_count', ascending=(order.lower() == 'asc'))
+                elif sort_column:
+                    sort_col_mean = f"{sort_column}_mean"
+                    sort_col_max = f"{sort_column}_max"
+                    sort_col_for_player = sort_col_max if sort_by in ['distance', 'exit_velocity', 'pitch_velocity'] else sort_col_mean
+                    player_stats = player_stats.sort_values(by=sort_col_for_player, ascending=(order.lower() == 'asc'))
+                else:
+                    player_stats = player_stats.sort_values(by='event_count', ascending=False)
+
+                player_stats = player_stats.head(limit)
+
+                leaderboard = []
+                for idx, ((player_id, player_name), row) in enumerate(player_stats.iterrows()):
+                    player_data = data[data['player_id'] == player_id]
+                    team_counts = player_data['batting_team'].value_counts()
+                    primary_team = team_counts.index[0] if not team_counts.empty else 'Unknown'
+
+                    # Highlight play for player
+                    highlight_sort_column = sort_column or 'launch_speed'
+                    highlight_play = player_data.nlargest(1, highlight_sort_column).iloc[0]
+                    highlight = {
+                        'date': str(highlight_play.get('game_date', 'Unknown')),
+                        'pitcher': str(highlight_play.get('player_name', 'Unknown')),
+                        'pitch_velocity': float(highlight_play.get('release_speed')) if pd.notna(highlight_play.get('release_speed')) else None,
+                        'exit_velocity': float(highlight_play.get('launch_speed')) if pd.notna(highlight_play.get('launch_speed')) else None,
+                        'distance': float(highlight_play.get('hit_distance_sc')) if pd.notna(highlight_play.get('hit_distance_sc')) else None,
+                        'pitch_type': str(highlight_play.get('pitch_type', 'Unknown')),
+                        'game_pk': str(highlight_play.get('game_pk')) if highlight_play.get('game_pk') else None,
+                    }
+                    if highlight.get('game_pk'):
+                        player_slug = player_name.replace(' ', '+')
+                        game_date = highlight['date']
+                        highlight['video_links'] = {
+                            'game_highlights_url': f"https://www.mlb.com/gameday/{highlight['game_pk']}/video",
+                            'film_room_search': f"https://www.mlb.com/video/search?q={player_slug}+{game_date}" if player_slug and game_date else None
+                        }
+
+                    leaderboard.append({
+                        "rank": idx + 1,
+                        "player": player_name,
+                        "player_id": int(player_id) if pd.notna(player_id) else None,
+                        "team": primary_team,
+                        "count": int(row.get('event_count', 0)),
+                        "avg_exit_velocity": float(row.get('avg_exit_velocity', 0)) if 'avg_exit_velocity' in row else None,
+                        "max_exit_velocity": float(row.get('max_exit_velocity', 0)) if 'max_exit_velocity' in row else None,
+                        "avg_distance": float(row.get('avg_distance', 0)) if 'avg_distance' in row else None,
+                        "avg_pitch_velocity": float(row.get('avg_pitch_velocity', 0)) if 'avg_pitch_velocity' in row else None,
+                        "avg_spin_rate": float(row.get('avg_spin_rate', 0)) if 'avg_spin_rate' in row else None,
+                        "avg_xba": float(row.get('avg_xba', 0)) if 'avg_xba' in row else None,
+                        "avg_xwoba": float(row.get('avg_xwoba', 0)) if 'avg_xwoba' in row else None,
+                        "highlight": highlight,
+                    })
+
+                response = json.dumps({
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "filter": {
+                        "result": result,
+                        "min_ev": min_ev,
+                        "min_pitch_velo": min_pitch_velo,
+                        "pitch_type": pitch_type,
+                        "player_name": player_name,
+                    },
+                    "grouping": "player",
+                    "sorted_by": sort_by,
+                    "leaderboard": leaderboard,
+                }, indent=2, default=str)
+
+                query_cache[cache_key] = {
+                    'data': response,
+                    'timestamp': datetime.now().isoformat()
+                }
+
                 return response
             
             # Remove rows with null values in sort column
