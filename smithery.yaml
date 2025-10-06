@@ -7,19 +7,20 @@ description: "MCP server exposing MLB/Fangraphs data via pybaseballstats. Access
 author: jweingardt12
 tags: ["sports", "baseball", "mlb", "statistics"]
 
-# Runtime configuration (REQUIRED)
+# Runtime configuration
 runtime: container
-
-# Build configuration
-build:
-  dockerfile: Dockerfile
-  dockerBuildPath: .
 
 startCommand:
   type: stdio
-  configSchema: {}
+  configSchema:
+    type: object
+    properties: {}
+    additionalProperties: false
   commandFunction: |-
     (config) => ({
       command: 'python',
-      args: ['-u', 'server.py']
+      args: ['server.py'],
+      env: {
+        PYTHONUNBUFFERED: '1'
+      }
     })
