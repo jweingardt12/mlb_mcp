@@ -215,7 +215,7 @@ def create_server():
             logger.error(f"Error getting player stats: {str(e)}")
             return f"Error: {str(e)}"
     
-@mcp.tool()
+    @mcp.tool()
     async def get_team_stats(team: str, year: Any, stat_type: str = "batting") -> str:
         """
         Get team stats for a given team and year. Type can be 'batting' or 'pitching'
@@ -330,7 +330,7 @@ def create_server():
             logger.error(f"Error getting team stats: {str(e)}")
             return f"Error: {str(e)}"
     
-@mcp.tool()
+    @mcp.tool()
     async def get_leaderboard(stat: str, season: Any, leaderboard_type: str = "batting", limit: Any = 10) -> str:
         """
         Get leaderboard for a given stat and season
@@ -393,7 +393,7 @@ def create_server():
             logger.error(f"Error getting leaderboard: {str(e)}")
             return f"Error: {str(e)}"
     
-@mcp.tool()
+    @mcp.tool()
     async def team_season_stats(year: Any, stat: str = "exit_velocity", min_result_type: Optional[str] = None) -> str:
         """
         Get team season averages for Statcast metrics. Optimized for fast team comparisons.
@@ -553,7 +553,7 @@ def create_server():
             logger.error(f"Error getting team season stats: {str(e)}")
             return f"Error: {str(e)}"
     
-@mcp.tool()
+    @mcp.tool()
     async def team_pitching_stats(year: Any, stat: str = "velocity", pitch_type: Optional[str] = None) -> str:
         """
         Get team pitching averages for Statcast metrics. Optimized for fast team pitching comparisons.
@@ -746,7 +746,7 @@ def create_server():
             logger.error(f"Error getting team pitching stats: {str(e)}")
             return f"Error: {str(e)}"
     
-@mcp.tool()
+    @mcp.tool()
     async def statcast_count(start_date: str, end_date: str, result_type: str = "home_run",
                             min_distance: Optional[Any] = None, min_exit_velocity: Optional[Any] = None,
                             max_distance: Optional[Any] = None, max_exit_velocity: Optional[Any] = None,
@@ -966,7 +966,7 @@ def create_server():
             logger.error(f"Error in statcast_count: {str(e)}")
             return json.dumps({"error": str(e)})
     
-@mcp.tool()
+    @mcp.tool()
     async def top_home_runs(year_start: Any = 2023, year_end: Optional[Any] = None, 
                             limit: Any = 5, min_exit_velocity: Optional[Any] = None) -> str:
         """
@@ -1134,7 +1134,7 @@ def create_server():
             logger.error(f"Error getting top home runs: {str(e)}")
             return f"Error: {str(e)}"
     
-@mcp.tool()
+    @mcp.tool()
     async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None,
                                  min_ev: Optional[float] = None, min_pitch_velo: Optional[float] = None,
                                  sort_by: str = "exit_velocity", limit: int = 10, order: str = "desc",
@@ -1470,7 +1470,7 @@ def create_server():
             logger.error(f"Error getting statcast leaderboard: {str(e)}")
             return f"Error: {str(e)}"
     
-@mcp.tool()
+    @mcp.tool()
     async def player_statcast(player_name: str, start_date: Optional[str] = None, end_date: Optional[str] = None,
                              pitch_type: Optional[str] = None, result_type: Optional[str] = None,
                              min_exit_velocity: Optional[Any] = None, min_distance: Optional[Any] = None) -> str:
