@@ -23,6 +23,7 @@ ENV/
 
 # Documentation (not needed in container)
 *.md
+!README.md
 CHANGELOG.md
 
 # Test files
