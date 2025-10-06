@@ -7,10 +7,13 @@ description: "MCP server exposing MLB/Fangraphs data via pybaseballstats. Access
 author: jweingardt12
 tags: ["sports", "baseball", "mlb", "statistics"]
 
-# Use stdio transport like the working DuckDuckGo example
+# Build configuration
+build:
+  dockerBuildPath: .
+
+# Start command for stdio transport
 startCommand:
   type: stdio
   configSchema: {}
   commandFunction: |-
     (config) => ({ command: 'python', args: ['server.py'] })
-  exampleConfig: {}
