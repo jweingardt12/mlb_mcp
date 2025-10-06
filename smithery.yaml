@@ -1,4 +1,4 @@
-# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+# Smithery configuration file: https://smithery.ai/docs/build/project-config
 
 # Publishing Information
 name: mlb_mcp
@@ -7,20 +7,5 @@ description: "MCP server exposing MLB/Fangraphs data via pybaseballstats. Access
 author: jweingardt12
 tags: ["sports", "baseball", "mlb", "statistics"]
 
-# Runtime configuration
-runtime: container
-
-startCommand:
-  type: stdio
-  configSchema:
-    type: object
-    properties: {}
-    additionalProperties: false
-  commandFunction: |-
-    (config) => ({
-      command: 'python',
-      args: ['server.py'],
-      env: {
-        PYTHONUNBUFFERED: '1'
-      }
-    })
+# Runtime configuration - Python servers use automatic containerization
+runtime: "python"

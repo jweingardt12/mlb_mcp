@@ -1,0 +1,31 @@
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
+
+[project]
+name = "mlb_mcp"
+version = "0.1.0"
+description = "MCP server exposing MLB/Fangraphs data via pybaseballstats. Access player statistics, team data, and leaderboards."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=1.0.0",
+    "mcp>=1.15.0",
+    "smithery>=0.4.2",
+    "pybaseball>=2.0.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "requests>=2.31.0",
+    "lxml>=4.6.0",
+    "beautifulsoup4>=4.10.0",
+    "matplotlib>=3.0.0",
+    "scipy>=1.4.0",
+]
+
+[project.scripts]
+dev = "smithery.cli.dev:main"
+playground = "smithery.cli.playground:main"
+
+# Points to your server function
+[tool.smithery]
+server = "mlb_mcp.server:create_server"
