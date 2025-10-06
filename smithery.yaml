@@ -10,10 +10,10 @@ tags: ["sports", "baseball", "mlb", "statistics"]
 # Build configuration
 build:
   dockerBuildPath: .
-
-# Start command for stdio transport
 startCommand:
   type: stdio
-  configSchema: {}
-  commandFunction: |-
+  configSchema:
+    type: object
+  commandFunction:
+    |-
     (config) => ({ command: 'python', args: ['server.py'] })

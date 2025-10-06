@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in container)
+*.md
+CHANGELOG.md
+
+# Test files
+test_*.py
+*_test.py
