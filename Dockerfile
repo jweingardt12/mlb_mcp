@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy server code
 COPY server.py .
+COPY __main__.py .
 
 # Set Python optimization flags
 ENV PYTHONUNBUFFERED=1 \
@@ -17,5 +18,5 @@ ENV PYTHONUNBUFFERED=1 \
 # The stdio server doesn't need PORT or HTTP setup
 # Smithery will handle the stdio communication
 
-# Run the server directly
-CMD ["python", "-m", "server"]
+# Run the server directly (not as a module)
+CMD ["python", "server.py"]
