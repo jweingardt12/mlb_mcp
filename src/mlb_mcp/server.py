@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import hashlib
 import json
 import calendar
+import re
 from functools import lru_cache
 from smithery.decorators import smithery
 
@@ -23,6 +24,49 @@ query_cache = {}
 
 # Cache for player names (permanent during server lifetime)
 player_name_cache = {}
+
+# Team alias mapping used across multiple tools
+TEAM_ALIASES = {
+    'orioles': 'BAL', 'baltimore': 'BAL',
+    'red sox': 'BOS', 'boston': 'BOS',
+    'yankees': 'NYY', 'new york yankees': 'NYY',
+    'rays': 'TBR', 'tampa': 'TBR', 'tampa bay': 'TBR',
+    'blue jays': 'TOR', 'toronto': 'TOR',
+    'white sox': 'CHW', 'chicago white sox': 'CHW',
+    'guardians': 'CLE', 'cleveland': 'CLE', 'indians': 'CLE',
+    'tigers': 'DET', 'detroit': 'DET',
+    'royals': 'KCR', 'kansas city': 'KCR',
+    'twins': 'MIN', 'minnesota': 'MIN',
+    'astros': 'HOU', 'houston': 'HOU',
+    'angels': 'LAA', 'los angeles angels': 'LAA',
+    'athletics': 'OAK', 'oakland': 'OAK',
+    'mariners': 'SEA', 'seattle': 'SEA',
+    'rangers': 'TEX', 'texas': 'TEX',
+    'braves': 'ATL', 'atlanta': 'ATL',
+    'marlins': 'MIA', 'miami': 'MIA', 'florida': 'FLA',
+    'mets': 'NYM', 'new york mets': 'NYM',
+    'phillies': 'PHI', 'philadelphia': 'PHI',
+    'nationals': 'WSN', 'washington': 'WSN', 'expos': 'MON',
+    'cubs': 'CHC', 'chicago cubs': 'CHC',
+    'reds': 'CIN', 'cincinnati': 'CIN',
+    'brewers': 'MIL', 'milwaukee': 'MIL',
+    'pirates': 'PIT', 'pittsburgh': 'PIT',
+    'cardinals': 'STL', 'st louis': 'STL', 'st. louis': 'STL',
+    'diamondbacks': 'ARI', 'arizona': 'ARI', 'dbacks': 'ARI',
+    'rockies': 'COL', 'colorado': 'COL',
+    'dodgers': 'LAD', 'los angeles dodgers': 'LAD',
+    'padres': 'SDP', 'san diego': 'SDP',
+    'giants': 'SFG', 'san francisco': 'SFG'
+}
+# Ensure abbreviations map to themselves
+TEAM_ALIASES.update({abbr.lower(): abbr for abbr in set(TEAM_ALIASES.values())})
+
+
+def resolve_team_alias(team: str) -> str:
+    """Resolve team names or abbreviations to MLB three-letter code."""
+    if not team:
+        return team
+    return TEAM_ALIASES.get(team.lower(), team.upper())
 
 def load_pybaseball():
     """Lazy load pybaseball to avoid startup delays"""
@@ -154,6 +198,424 @@ def create_server():
     mcp = FastMCP("mlb-stats-mcp")
 
     @mcp.tool()
+    async def search(query: str, limit: Any = 5) -> str:
+        """
+        General search interface that interprets free-form baseball questions and maps them
+        to concrete MLB data tools. Returns a list of candidate actions with the tool name
+        and parameters needed to fulfill the request.
+        
+        Args:
+            query: Natural language request, e.g. "Aaron Judge 2024 statcast" or "Yankees pitching stats 2025"
+            limit: Maximum number of results to return (default 5, capped at 20)
+        
+        Returns:
+            JSON string containing matched results with suggested tool + parameters
+        """
+        try:
+            limit_value = max(1, min(int(limit), 20))
+        except (ValueError, TypeError):
+            limit_value = 5
+
+        normalized_query = query.lower().strip()
+        normalized_words = set(re.findall(r"[a-z0-9/\\+]+", normalized_query))
+        current_year = datetime.now().year
+
+        year_matches = re.findall(r"\b(19|20)\d{2}\b", query)
+        year_context = current_year
+        if year_matches:
+            try:
+                year_context = int(year_matches[-1])
+                year_context = max(1871, min(year_context, current_year))
+            except ValueError:
+                year_context = current_year
+
+        results: List[Dict[str, Any]] = []
+        today = datetime.now()
+        today_str = today.strftime('%Y-%m-%d')
+        default_start = f"{year_context}-03-01"
+        default_end = today_str if year_context >= current_year else f"{year_context}-11-15"
+
+        # Attempt to interpret as a player lookup
+        STOP_WORDS = {
+            "statcast", "stats", "stat", "team", "teams", "leaderboard", "leaders",
+            "search", "count", "season", "since", "how", "many", "latest", "compare",
+            "against", "versus", "vs", "what", "is", "are", "the", "a", "an", "mlb",
+            "exit", "velocity", "launch", "angle", "home", "runs", "for", "top", "best"
+        }
+        candidate_tokens = [token for token in re.findall(r"[A-Za-z']+", query) if token.lower() not in STOP_WORDS]
+
+        try:
+            if candidate_tokens:
+                last_name = candidate_tokens[-1]
+                first_name = " ".join(candidate_tokens[:-1])
+
+                pb = load_pybaseball()
+                from pybaseball import playerid_lookup
+
+                player_matches = playerid_lookup(last_name, first_name)
+
+                # If no matches and at least two tokens, try flipping first/last
+                if player_matches.empty and len(candidate_tokens) >= 2:
+                    flipped_last = candidate_tokens[0]
+                    flipped_first = " ".join(candidate_tokens[1:])
+                    player_matches = playerid_lookup(flipped_last, flipped_first)
+
+                for _, player in player_matches.head(limit_value).iterrows():
+                    full_name = f"{player.get('name_first', '').strip()} {player.get('name_last', '').strip()}".strip()
+                    if not full_name:
+                        continue
+                    player_id = player.get('key_mlbam')
+                    results.append({
+                        "id": f"player:{player_id}",
+                        "title": f"{full_name} Statcast overview",
+                        "description": f"Get Statcast summary for {full_name}.",
+                        "tool": "get_player_stats",
+                        "parameters": {
+                            "name": full_name,
+                            "start_date": None,
+                            "end_date": None
+                        }
+                    })
+                    if len(results) >= limit_value:
+                        break
+        except Exception as exc:
+            logger.debug(f"Search player lookup failed: {exc}")
+
+        if len(results) < limit_value:
+            # Team detection using aliases/abbreviations
+            matched_team = None
+            for alias, abbr in TEAM_ALIASES.items():
+                if " " in alias:
+                    if alias in normalized_query:
+                        matched_team = abbr
+                        break
+                else:
+                    if alias in normalized_words:
+                        matched_team = abbr
+                        break
+
+            if matched_team:
+                stat_type = "pitching" if "pitch" in normalized_query else "batting"
+                results.append({
+                    "id": f"team:{matched_team}:{year_context}:{stat_type}",
+                    "title": f"{matched_team} {year_context} {stat_type} stats",
+                    "description": f"Team {stat_type} totals for {matched_team} in {year_context}.",
+                    "tool": "get_team_stats",
+                    "parameters": {
+                        "team": matched_team,
+                        "year": year_context,
+                        "stat_type": stat_type
+                    }
+                })
+
+        if len(results) < limit_value:
+            # Leaderboard detection
+            STAT_KEYWORDS = {
+                'home run': ('HR', 'batting'),
+                'home runs': ('HR', 'batting'),
+                'hr': ('HR', 'batting'),
+                'avg': ('AVG', 'batting'),
+                'average': ('AVG', 'batting'),
+                'ops': ('OPS', 'batting'),
+                'obp': ('OBP', 'batting'),
+                'slg': ('SLG', 'batting'),
+                'woba': ('wOBA', 'batting'),
+                'era': ('ERA', 'pitching'),
+                'whip': ('WHIP', 'pitching'),
+                'strikeout': ('SO', 'pitching'),
+                'strikeouts': ('SO', 'pitching'),
+                'k/9': ('K/9', 'pitching'),
+                'sv': ('SV', 'pitching')
+            }
+
+            leaderboard_match = None
+            for keyword, mapped in STAT_KEYWORDS.items():
+                if keyword in normalized_query:
+                    leaderboard_match = mapped
+                    break
+
+            if ('leaderboard' in normalized_query or 'leaders' in normalized_query or leaderboard_match) and len(results) < limit_value:
+                stat, leaderboard_type = leaderboard_match if leaderboard_match else ('HR', 'batting')
+                results.append({
+                    "id": f"leaderboard:{stat}:{leaderboard_type}:{year_context}",
+                    "title": f"{year_context} {stat} {leaderboard_type} leaderboard",
+                    "description": f"Top {stat} performers ({leaderboard_type}) for {year_context}.",
+                    "tool": "get_leaderboard",
+                    "parameters": {
+                        "stat": stat,
+                        "season": year_context,
+                        "leaderboard_type": leaderboard_type,
+                        "limit": limit_value
+                    }
+                })
+
+        if len(results) < limit_value and ("statcast" in normalized_query or "exit velocity" in normalized_query or "launch angle" in normalized_query):
+            results.append({
+                "id": f"statcast_leaderboard:{year_context}",
+                "title": f"Statcast leaderboard {year_context}",
+                "description": "Detailed Statcast leaderboard with advanced filters.",
+                "tool": "statcast_leaderboard",
+                "parameters": {
+                    "start_date": default_start,
+                    "end_date": default_end,
+                    "sort_by": "exit_velocity",
+                    "limit": min(limit_value, 20)
+                }
+            })
+
+        if len(results) < limit_value and ("count" in normalized_query or "how many" in normalized_query):
+            results.append({
+                "id": f"statcast_count:{year_context}",
+                "title": f"Count Statcast events {year_context}",
+                "description": "Count Statcast events that match custom filters (e.g., home runs).",
+                "tool": "statcast_count",
+                "parameters": {
+                    "start_date": default_start,
+                    "end_date": default_end,
+                    "result_type": "home_run"
+                }
+            })
+
+        if not results:
+            results.append({
+                "id": "help",
+                "title": "Available MLB tools",
+                "description": "Try queries like 'Aaron Judge statcast', 'Yankees pitching stats 2025', or '2024 HR leaderboard'.",
+                "tool": None,
+                "parameters": {}
+            })
+
+        response = {
+            "query": query,
+            "year_context": year_context,
+            "generated_at": today_str,
+            "results": results[:limit_value]
+        }
+        return json.dumps(response, indent=2, default=str)
+
+    @mcp.tool()
+    async def fetch(items: Any) -> str:
+        """
+        Execute one or more search result items and return their data.
+
+        Args:
+            items: Either a single item or a list of items. Each item can be an id string,
+                   or a dict with keys: id (required), tool (optional), parameters (optional).
+
+        Returns:
+            JSON string containing execution results for each requested id.
+        """
+        # Normalize inputs into a list of dicts
+        if isinstance(items, str):
+            normalized_items = [{"id": items}]
+        elif isinstance(items, dict):
+            normalized_items = [items]
+        elif isinstance(items, list):
+            normalized_items = []
+            for entry in items:
+                if isinstance(entry, str):
+                    normalized_items.append({"id": entry})
+                elif isinstance(entry, dict):
+                    normalized_items.append(entry)
+        else:
+            return json.dumps({
+                "error": "Invalid fetch payload. Provide an id string, an object, or a list of objects."
+            }, indent=2)
+
+        if not normalized_items:
+            return json.dumps({"results": []}, indent=2)
+
+        results = []
+
+        for item in normalized_items:
+            fetch_id = item.get("id")
+            tool_override = item.get("tool")
+            params = item.get("parameters", {}) or {}
+            result_entry: Dict[str, Any] = {
+                "id": fetch_id,
+                "status": "error",
+                "data": None
+            }
+
+            if not fetch_id:
+                result_entry["error"] = "Missing id in fetch item."
+                results.append(result_entry)
+                continue
+
+            id_parts = fetch_id.split(":")
+            id_type = id_parts[0]
+
+            try:
+                if id_type == "help":
+                    result_entry["status"] = "ok"
+                    result_entry["data"] = {
+                        "message": "Available tools include get_player_stats, get_team_stats, get_leaderboard, "
+                                   "statcast_leaderboard, statcast_count. Use the search tool to generate "
+                                   "structured parameters or provide them manually in fetch."
+                    }
+                    results.append(result_entry)
+                    continue
+
+                if tool_override:
+                    # If a tool is explicitly specified, invoke it directly
+                    tool_name = tool_override
+                else:
+                    tool_name = {
+                        "player": "get_player_stats",
+                        "team": "get_team_stats",
+                        "leaderboard": "get_leaderboard",
+                        "statcast_leaderboard": "statcast_leaderboard",
+                        "statcast_count": "statcast_count"
+                    }.get(id_type)
+
+                if tool_name is None:
+                    result_entry["error"] = f"Unrecognized fetch id '{fetch_id}'"
+                    results.append(result_entry)
+                    continue
+
+                # Dispatch per tool
+                if tool_name == "get_player_stats":
+                    name = params.get("name")
+                    if not name:
+                        # Try to resolve via MLBAM id
+                        if len(id_parts) >= 2 and id_parts[1].isdigit():
+                            try:
+                                pb = load_pybaseball()
+                                from pybaseball import playerid_reverse_lookup
+                                player_df = playerid_reverse_lookup([int(id_parts[1])], key_type='mlbam')
+                                if not player_df.empty:
+                                    row = player_df.iloc[0]
+                                    name = f"{row.get('name_first', '').strip()} {row.get('name_last', '').strip()}".strip()
+                            except Exception as exc:
+                                logger.debug(f"Reverse lookup failed for {fetch_id}: {exc}")
+                    if not name:
+                        result_entry["error"] = "Player name is required to fetch stats."
+                        results.append(result_entry)
+                        continue
+                    start_date = params.get("start_date")
+                    end_date = params.get("end_date")
+                    raw = await get_player_stats(name=name, start_date=start_date, end_date=end_date)
+
+                elif tool_name == "get_team_stats":
+                    if len(id_parts) >= 4 and not params:
+                        params = {
+                            "team": id_parts[1],
+                            "year": id_parts[2],
+                            "stat_type": id_parts[3]
+                        }
+                    team = params.get("team")
+                    year = params.get("year")
+                    stat_type = params.get("stat_type", "batting")
+                    if not (team and year):
+                        result_entry["error"] = "Team and year are required for team stats."
+                        results.append(result_entry)
+                        continue
+                    raw = await get_team_stats(team=team, year=year, stat_type=stat_type)
+
+                elif tool_name == "get_leaderboard":
+                    if len(id_parts) >= 4 and not params:
+                        params = {
+                            "stat": id_parts[1],
+                            "season": id_parts[3],
+                            "leaderboard_type": id_parts[2]
+                        }
+                    stat = params.get("stat", "HR")
+                    season = params.get("season")
+                    leaderboard_type = params.get("leaderboard_type", "batting")
+                    limit_val = params.get("limit", 10)
+                    if not season:
+                        season = datetime.now().year
+                    raw = await get_leaderboard(stat=stat, season=season,
+                                                leaderboard_type=leaderboard_type, limit=limit_val)
+
+                elif tool_name == "statcast_leaderboard":
+                    if len(id_parts) >= 2 and not params:
+                        year_val = id_parts[1]
+                        params = {
+                            "start_date": f"{year_val}-03-01",
+                            "end_date": f"{year_val}-11-15",
+                            "sort_by": "exit_velocity",
+                            "limit": 10
+                        }
+                    start_date = params.get("start_date")
+                    end_date = params.get("end_date")
+                    sort_by = params.get("sort_by", "exit_velocity")
+                    limit_val = params.get("limit", 10)
+                    result_filter = params.get("result")
+                    min_ev = params.get("min_ev")
+                    min_pitch_velo = params.get("min_pitch_velo")
+                    order = params.get("order", "desc")
+                    group_by = params.get("group_by")
+                    pitch_type = params.get("pitch_type")
+                    player_name = params.get("player_name")
+                    if not (start_date and end_date):
+                        result_entry["error"] = "start_date and end_date are required for statcast_leaderboard."
+                        results.append(result_entry)
+                        continue
+                    raw = await statcast_leaderboard(start_date=start_date, end_date=end_date,
+                                                     result=result_filter, min_ev=min_ev,
+                                                     min_pitch_velo=min_pitch_velo, sort_by=sort_by,
+                                                     limit=limit_val, order=order,
+                                                     group_by=group_by, pitch_type=pitch_type,
+                                                     player_name=player_name)
+
+                elif tool_name == "statcast_count":
+                    if len(id_parts) >= 2 and not params:
+                        year_val = id_parts[1]
+                        params = {
+                            "start_date": f"{year_val}-03-01",
+                            "end_date": f"{year_val}-11-15",
+                            "result_type": "home_run"
+                        }
+                    start_date = params.get("start_date")
+                    end_date = params.get("end_date")
+                    result_type = params.get("result_type", "home_run")
+                    min_distance = params.get("min_distance")
+                    min_exit_velocity = params.get("min_exit_velocity")
+                    max_distance = params.get("max_distance")
+                    max_exit_velocity = params.get("max_exit_velocity")
+                    player_name = params.get("player_name")
+                    pitch_type = params.get("pitch_type")
+                    if not (start_date and end_date):
+                        result_entry["error"] = "start_date and end_date are required for statcast_count."
+                        results.append(result_entry)
+                        continue
+                    raw = await statcast_count(
+                        start_date=start_date,
+                        end_date=end_date,
+                        result_type=result_type,
+                        min_distance=min_distance,
+                        min_exit_velocity=min_exit_velocity,
+                        max_distance=max_distance,
+                        max_exit_velocity=max_exit_velocity,
+                        player_name=player_name,
+                        pitch_type=pitch_type
+                    )
+
+                else:
+                    result_entry["error"] = f"Unsupported tool '{tool_name}'"
+                    results.append(result_entry)
+                    continue
+
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    parsed = raw
+
+                result_entry["status"] = "ok"
+                result_entry["data"] = parsed
+                if parsed is raw:
+                    result_entry["raw"] = raw
+
+            except Exception as exc:
+                logger.error(f"Fetch failed for {fetch_id}: {exc}")
+                result_entry["error"] = str(exc)
+
+            results.append(result_entry)
+
+        return json.dumps({"results": results}, indent=2, default=str)
+
+    @mcp.tool()
     async def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> str:
         """
         Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)
@@ -187,10 +649,12 @@ def create_server():
             if start_date and end_date:
                 data = statcast_batter(start_date, end_date, player_id)
             else:
-                # Default to current season
+                # Default to active season through today's date
                 from datetime import datetime
-                current_year = datetime.now().year
-                data = statcast_batter(f"{current_year}-04-01", f"{current_year}-10-01", player_id)
+                today = datetime.now()
+                season_year = today.year if today.month >= 3 else today.year - 1
+                season_start = f"{season_year}-03-01"
+                data = statcast_batter(season_start, today.strftime('%Y-%m-%d'), player_id)
             
             if data.empty:
                 return f"No statcast data found for {name}"
@@ -257,46 +721,12 @@ def create_server():
                 logger.error(f"Error fetching team stats: {str(e)}")
                 return f"Error fetching {stat_type} stats for {year}: {str(e)}"
             
-            # Team name to abbreviation mapping
-            team_mapping = {
-                'orioles': 'BAL', 'baltimore': 'BAL',
-                'red sox': 'BOS', 'boston': 'BOS',
-                'yankees': 'NYY', 'new york yankees': 'NYY',
-                'rays': 'TBR', 'tampa': 'TBR', 'tampa bay': 'TBR',
-                'blue jays': 'TOR', 'toronto': 'TOR',
-                'white sox': 'CHW', 'chicago white sox': 'CHW',
-                'guardians': 'CLE', 'cleveland': 'CLE', 'indians': 'CLE',
-                'tigers': 'DET', 'detroit': 'DET',
-                'royals': 'KCR', 'kansas city': 'KCR',
-                'twins': 'MIN', 'minnesota': 'MIN',
-                'astros': 'HOU', 'houston': 'HOU',
-                'angels': 'LAA', 'los angeles angels': 'LAA',
-                'athletics': 'OAK', 'oakland': 'OAK', 'as': 'OAK',
-                'mariners': 'SEA', 'seattle': 'SEA',
-                'rangers': 'TEX', 'texas': 'TEX',
-                'braves': 'ATL', 'atlanta': 'ATL',
-                'marlins': 'MIA', 'miami': 'MIA', 'florida': 'FLA',
-                'mets': 'NYM', 'new york mets': 'NYM',
-                'phillies': 'PHI', 'philadelphia': 'PHI',
-                'nationals': 'WSN', 'washington': 'WSN', 'expos': 'MON',
-                'cubs': 'CHC', 'chicago cubs': 'CHC',
-                'reds': 'CIN', 'cincinnati': 'CIN',
-                'brewers': 'MIL', 'milwaukee': 'MIL',
-                'pirates': 'PIT', 'pittsburgh': 'PIT',
-                'cardinals': 'STL', 'st louis': 'STL', 'st. louis': 'STL',
-                'diamondbacks': 'ARI', 'arizona': 'ARI', 'dbacks': 'ARI',
-                'rockies': 'COL', 'colorado': 'COL',
-                'dodgers': 'LAD', 'los angeles dodgers': 'LAD',
-                'padres': 'SDP', 'san diego': 'SDP',
-                'giants': 'SFG', 'san francisco': 'SFG'
-            }
-            
             # Find the team
             import pandas as pd
             
             # Try to find team abbreviation
             team_lower = team.lower()
-            team_abbr = team_mapping.get(team_lower, team.upper())
+            team_abbr = resolve_team_alias(team)
             
             # Try exact match first
             team_data = data[data['Team'] == team_abbr]
