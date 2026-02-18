@@ -188,18 +188,15 @@ New team aggregation feature for `statcast_leaderboard`:
 Deploy to Railway for a hosted HTTP MCP endpoint that Smithery can connect to:
 
 1. Create a new Railway project and connect your GitHub repository
-2. Railway will auto-detect the `Procfile` and deploy
+2. Railway will auto-detect the `Procfile` and deploy automatically
 3. Your MCP endpoint will be available at `https://<your-railway-domain>/mcp`
 4. Connect this URL to [Smithery](https://smithery.ai) for distribution
 
-**Environment Variables (optional):**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | (Railway sets) | HTTP port - automatically switches to HTTP transport |
-| `MCP_TRANSPORT` | `stdio` / `http` | Override transport mode (`stdio`, `http`, `sse`) |
-| `MCP_HOST` | `0.0.0.0` | Host to bind for HTTP transport |
-| `MCP_PORT` | `$PORT` or `8000` | Port for HTTP transport |
-| `MCP_PATH` | `/mcp` | MCP endpoint path |
+**Manual Start Command (if needed):**
+If Railway doesn't auto-detect the Procfile, set this Start Command in Railway Settings:
+```
+uv run fastmcp run src/mlb_mcp/server.py:mcp --transport http --host 0.0.0.0 --port $PORT
+```
 
 ### Deploy on Smithery Direct
 

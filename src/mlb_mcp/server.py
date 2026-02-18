@@ -2418,6 +2418,10 @@ def create_server():
     
     return mcp
 
+# Module-level server instance for FastMCP CLI discovery
+# FastMCP CLI looks for 'mcp', 'server', or 'app' at module level
+mcp = create_server()
+
 def main():
     """Main entry point for the MCP server.
     
@@ -2432,7 +2436,6 @@ def main():
     - MCP_PATH: Override MCP endpoint path (default: '/mcp')
     """
     logger.info("Starting MLB Stats MCP server")
-    server = create_server()
     
     port_env = os.environ.get("PORT")
     transport = os.environ.get("MCP_TRANSPORT")
@@ -2449,10 +2452,10 @@ def main():
         port = int(os.environ.get("MCP_PORT") or port_env or "8000")
         path = os.environ.get("MCP_PATH", "/mcp")
         logger.info(f"Running MCP server with {transport} transport on {host}:{port}{path}")
-        server.run(transport=transport, host=host, port=port, path=path)
+        mcp.run(transport=transport, host=host, port=port, path=path)
     else:
         logger.info("Running MCP server with stdio transport")
-        server.run()
+        mcp.run()
 
 if __name__ == "__main__":
     main()
