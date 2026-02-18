@@ -383,12 +383,12 @@ def get_cache_key(start_date: str, end_date: str, **kwargs) -> str:
     key_data = f"{start_date}_{end_date}_{json.dumps(kwargs, sort_keys=True)}"
     return hashlib.md5(key_data.encode()).hexdigest()
 
-def is_cache_valid(cache_entry: dict) -> bool:
-    """Check if cache entry is still valid (15 minute TTL)"""
+def is_cache_valid(cache_entry: dict, ttl_seconds: int = 900) -> bool:
+    """Check if cache entry is still valid (default 15 minute TTL)"""
     if not cache_entry:
         return False
     cached_time = datetime.fromisoformat(cache_entry['timestamp'])
-    return (datetime.now() - cached_time).seconds < 900
+    return (datetime.now() - cached_time).total_seconds() < ttl_seconds
 
 def get_player_names_batch(player_ids: list) -> dict:
     """Get player names from IDs in batch with caching"""
@@ -777,7 +777,7 @@ def create_server():
             first_name = name.split()[0] if len(name.split()) > 1 else ''
             results = playerid_lookup(last_name, first_name)
             if results.empty:
-                return f"No player found matching '{name}'"
+                return json.dumps({"error": f"No player found matching '{name}'"})
     
             # Use mlbam ID for statcast queries (not fangraphs)
             player_id = results.iloc[0]['key_mlbam']
@@ -788,14 +788,13 @@ def create_server():
                 data = statcast_batter(start_date, end_date, player_id)
             else:
                 # Default to active season through today's date
-                from datetime import datetime
                 today = datetime.now()
                 season_year = today.year if today.month >= 3 else today.year - 1
                 season_start = f"{season_year}-03-01"
                 data = statcast_batter(season_start, today.strftime('%Y-%m-%d'), player_id)
             
             if data.empty:
-                return f"No statcast data found for {name}"
+                return json.dumps({"error": f"No statcast data found for {name}"})
             
             # Format results
             stats = {
@@ -810,12 +809,11 @@ def create_server():
                 "barrel_rate": (len(data[data['barrel'] == 1]) / len(data) * 100) if 'barrel' in data.columns else None
             }
             
-            import json
             return json.dumps(stats, indent=2)
             
         except Exception as e:
             logger.error(f"Error getting player stats: {str(e)}")
-            return f"Error: {str(e)}"
+            return json.dumps({"error": str(e)})
     
     @mcp.tool(name="get_team_stats", description="Fetch team batting or pitching totals for a season")
     async def get_team_stats(team: str, year: Any, stat_type: str = "batting") -> str:
@@ -840,10 +838,9 @@ def create_server():
             from pybaseball import team_batting, team_pitching
             
             # Validate year
-            from datetime import datetime
             current_year = datetime.now().year
             if year < 1871 or year > current_year:
-                return f"Invalid year: {year}. Please use a year between 1871 and {current_year}"
+                return json.dumps({"error": f"Invalid year: {year}. Please use a year between 1871 and {current_year}"})
             
             # Get team stats
             logger.info(f"Fetching {stat_type} stats for {year}")
@@ -854,10 +851,10 @@ def create_server():
                 elif stat_type.lower() == "pitching":
                     data = team_pitching(year)
                 else:
-                    return f"Invalid stat_type: {stat_type}. Use 'batting' or 'pitching'"
+                    return json.dumps({"error": f"Invalid stat_type: {stat_type}. Use 'batting' or 'pitching'"})
             except Exception as e:
                 logger.error(f"Error fetching team stats: {str(e)}")
-                return f"Error fetching {stat_type} stats for {year}: {str(e)}"
+                return json.dumps({"error": f"Error fetching {stat_type} stats for {year}: {str(e)}"})
             
             # Find the team
             import pandas as pd
@@ -880,14 +877,13 @@ def create_server():
             if team_data.empty:
                 # List available teams
                 available_teams = data['Team'].unique().tolist()
-                return f"No data found for team '{team}' in {year}. Available teams: {', '.join(sorted(available_teams))}"
+                return json.dumps({"error": f"No data found for team '{team}' in {year}", "available_teams": sorted(available_teams)})
             
             # Convert to dict and format
             result = team_data.iloc[0].to_dict()
             
             # Clean up NaN values
             import numpy as np
-            import json
             for key, value in result.items():
                 if isinstance(value, float) and np.isnan(value):
                     result[key] = None
@@ -896,7 +892,7 @@ def create_server():
             
         except Exception as e:
             logger.error(f"Error getting team stats: {str(e)}")
-            return f"Error: {str(e)}"
+            return json.dumps({"error": str(e)})
     
     @mcp.tool(name="get_leaderboard", description="Get MLB leaderboard for a stat and season")
     async def get_leaderboard(stat: str, season: Any, leaderboard_type: str = "batting", limit: Any = 10) -> str:
@@ -928,11 +924,11 @@ def create_server():
             elif leaderboard_type.lower() == "pitching":
                 data = pitching_stats(season)
             else:
-                return f"Invalid leaderboard_type: {leaderboard_type}. Use 'batting' or 'pitching'"
+                return json.dumps({"error": f"Invalid leaderboard_type: {leaderboard_type}. Use 'batting' or 'pitching'"})
             
             # Check if stat exists
             if stat not in data.columns:
-                return f"Stat '{stat}' not found. Available stats: {', '.join(data.columns)}"
+                return json.dumps({"error": f"Stat '{stat}' not found", "available_stats": list(data.columns)})
             
             # Sort by the stat and get top players
             import pandas as pd
@@ -940,16 +936,15 @@ def create_server():
             
             # Create leaderboard
             leaderboard = []
-            for idx, row in sorted_data.iterrows():
+            for rank, (idx, row) in enumerate(sorted_data.iterrows(), 1):
                 entry = {
-                    "rank": idx + 1,
+                    "rank": rank,
                     "player": row.get('Name', 'Unknown'),
                     "team": row.get('Team', 'Unknown'),
                     stat: row[stat]
                 }
                 leaderboard.append(entry)
             
-            import json
             return json.dumps({
                 "stat": stat,
                 "season": season,
@@ -959,7 +954,7 @@ def create_server():
             
         except Exception as e:
             logger.error(f"Error getting leaderboard: {str(e)}")
-            return f"Error: {str(e)}"
+            return json.dumps({"error": str(e)})
     
     @mcp.tool()
     async def team_season_stats(year: Any, stat: str = "exit_velocity", min_result_type: Optional[str] = None) -> str:
@@ -984,16 +979,12 @@ def create_server():
             
             if cache_key in query_cache:
                 cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
-                if (datetime.now() - cached_time).seconds < 86400:  # 24 hour cache
+                if (datetime.now() - cached_time).total_seconds() < 86400:  # 24 hour cache
                     logger.info(f"Using cached team season data for {cache_key}")
                     return query_cache[cache_key]['data']
             
             pb = load_pybaseball()
             from pybaseball import statcast
-            try:
-                from pybaseball import statcast_homeruns
-            except ImportError:
-                statcast_homeruns = None
             import pandas as pd
             import numpy as np
             
@@ -1006,32 +997,30 @@ def create_server():
                 end_date = f"{year}-10-31"
             
             logger.info(f"Fetching team season stats for {year}, stat={stat}")
-            
-            # Use a sampling approach for current season to avoid timeouts
-            # Sample every 7th day to get representative data quickly
-            sample_dates = []
-            current = datetime.strptime(start_date, '%Y-%m-%d')
-            end = datetime.strptime(end_date, '%Y-%m-%d')
-            
-            while current <= end:
-                sample_dates.append(current.strftime('%Y-%m-%d'))
-                current += timedelta(days=7)
-            
-            # Fetch sample data
+
+            # Use chunked sampling: fetch 2-day windows every 14 days for representative data
+            # This reduces API calls by ~3.5x vs fetching individual days every 7 days
             all_data = []
-            for sample_date in sample_dates:
+            current = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            sample_count = 0
+
+            while current <= end_dt:
+                sample_end = min(current + timedelta(days=1), end_dt)
                 try:
-                    # Get one day of data
-                    data = statcast(start_dt=sample_date, end_dt=sample_date)
+                    data = statcast(start_dt=current.strftime('%Y-%m-%d'), end_dt=sample_end.strftime('%Y-%m-%d'))
                     if not data.empty:
                         all_data.append(data)
+                    sample_count += 1
                 except Exception as e:
-                    logger.error(f"Error fetching data for {sample_date}: {str(e)}")
-                    continue
-            
+                    logger.debug(f"Error fetching data for {current.strftime('%Y-%m-%d')}: {str(e)}")
+                current += timedelta(days=14)
+
+            logger.info(f"Fetched {sample_count} sample windows for team season stats")
+
             if not all_data:
-                return f"No data available for {year} season"
-            
+                return json.dumps({"error": f"No data available for {year} season"})
+
             # Combine samples
             data = pd.concat(all_data, ignore_index=True)
             
@@ -1108,7 +1097,7 @@ def create_server():
                 "year": year,
                 "stat": stat,
                 "filter": min_result_type,
-                "sample_size": f"{len(sample_dates)} days sampled",
+                "sample_size": f"{sample_count} sample windows",
                 "total_events": len(data),
                 "leaderboard": leaderboard
             }, indent=2, default=str)
@@ -1123,7 +1112,7 @@ def create_server():
             
         except Exception as e:
             logger.error(f"Error getting team season stats: {str(e)}")
-            return f"Error: {str(e)}"
+            return json.dumps({"error": str(e)})
     
     @mcp.tool()
     async def team_pitching_stats(year: Any, stat: str = "velocity", pitch_type: Optional[str] = None) -> str:
@@ -1149,7 +1138,7 @@ def create_server():
             
             if cache_key in query_cache:
                 cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
-                if (datetime.now() - cached_time).seconds < 86400:  # 24 hour cache
+                if (datetime.now() - cached_time).total_seconds() < 86400:  # 24 hour cache
                     logger.info(f"Using cached team pitching data for {cache_key}")
                     return query_cache[cache_key]['data']
             
@@ -1168,29 +1157,28 @@ def create_server():
             
             logger.info(f"Fetching team pitching stats for {year}, stat={stat}")
             
-            # Use sampling approach (every 7th day)
-            sample_dates = []
-            current = datetime.strptime(start_date, '%Y-%m-%d')
-            end = datetime.strptime(end_date, '%Y-%m-%d')
-            
-            while current <= end:
-                sample_dates.append(current.strftime('%Y-%m-%d'))
-                current += timedelta(days=7)
-            
-            # Fetch sample data
+            # Use chunked sampling: fetch 2-day windows every 14 days for representative data
             all_data = []
-            for sample_date in sample_dates:
+            current = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            sample_count = 0
+
+            while current <= end_dt:
+                sample_end = min(current + timedelta(days=1), end_dt)
                 try:
-                    data = statcast(start_dt=sample_date, end_dt=sample_date)
+                    data = statcast(start_dt=current.strftime('%Y-%m-%d'), end_dt=sample_end.strftime('%Y-%m-%d'))
                     if not data.empty:
                         all_data.append(data)
+                    sample_count += 1
                 except Exception as e:
-                    logger.error(f"Error fetching data for {sample_date}: {str(e)}")
-                    continue
-            
+                    logger.debug(f"Error fetching data for {current.strftime('%Y-%m-%d')}: {str(e)}")
+                current += timedelta(days=14)
+
+            logger.info(f"Fetched {sample_count} sample windows for team pitching stats")
+
             if not all_data:
-                return f"No data available for {year} season"
-            
+                return json.dumps({"error": f"No data available for {year} season"})
+
             # Combine samples
             data = pd.concat(all_data, ignore_index=True)
             
@@ -1198,7 +1186,7 @@ def create_server():
             if pitch_type:
                 data = data[data['pitch_type'] == pitch_type]
                 if data.empty:
-                    return f"No data found for pitch type {pitch_type}"
+                    return json.dumps({"error": f"No data found for pitch type {pitch_type}"})
             
             # Add pitching team using vectorized operations
             data['pitching_team'] = np.where(
@@ -1301,7 +1289,7 @@ def create_server():
                 "year": year,
                 "stat": stat,
                 "pitch_type_filter": pitch_type,
-                "sample_size": f"{len(sample_dates)} days sampled",
+                "sample_size": f"{sample_count} sample windows",
                 "total_pitches": len(data),
                 "leaderboard": leaderboard
             }, indent=2, default=str)
@@ -1316,7 +1304,7 @@ def create_server():
             
         except Exception as e:
             logger.error(f"Error getting team pitching stats: {str(e)}")
-            return f"Error: {str(e)}"
+            return json.dumps({"error": str(e)})
     
     @mcp.tool()
     async def statcast_count(start_date: str, end_date: str, result_type: str = "home_run",
@@ -1381,7 +1369,7 @@ def create_server():
             
             if cache_key in query_cache:
                 cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
-                if (datetime.now() - cached_time).seconds < 86400:  # 24 hour cache
+                if (datetime.now() - cached_time).total_seconds() < 86400:  # 24 hour cache
                     logger.info(f"Using cached count data for {cache_key}")
                     return query_cache[cache_key]['data']
             
@@ -1403,10 +1391,7 @@ def create_server():
             for i, (chunk_start, chunk_end) in enumerate(date_chunks, 1):
                 try:
                     logger.info(f"Fetching chunk {i}/{len(date_chunks)}: {chunk_start} to {chunk_end}")
-                    if result == 'home_run' and statcast_homeruns is not None:
-                        chunk_data = statcast_homeruns(start_dt=chunk_start, end_dt=chunk_end)
-                    else:
-                        chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
+                    chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
                     
                     if not chunk_data.empty:
                         # Apply filters immediately to reduce memory
@@ -1614,44 +1599,39 @@ def create_server():
                                 hrs = hrs[hrs['launch_speed'] >= min_exit_velocity]
                             
                             if not hrs.empty:
-                                # Sort by exit velocity and get top ones
-                                hrs_sorted = hrs.sort_values('launch_speed', ascending=False)
-                                
-                                # Add to our running list
-                                for _, hr in hrs_sorted.iterrows():
-                                    try:
-                                        # Safely convert values, handling NAType
-                                        exit_vel = hr['launch_speed']
-                                        if pd.isna(exit_vel):
-                                            continue  # Skip rows with missing exit velocity
-                                        
-                                        # Note: player_name in statcast data is the pitcher's name
-                                        # The batter ID is in the 'batter' column
-                                        batter_id = hr.get('batter')
-                                        if pd.isna(batter_id):
+                                # Filter out rows with missing exit velocity or batter
+                                hrs = hrs.dropna(subset=['launch_speed', 'batter'])
+
+                                if not hrs.empty:
+                                    # Only keep candidates that could make the top N
+                                    min_threshold = top_hrs[-1]['exit_velocity'] if len(top_hrs) >= limit else 0
+                                    hrs = hrs[hrs['launch_speed'] > min_threshold]
+
+                                if not hrs.empty:
+                                    # Use itertuples for faster iteration (5-10x faster than iterrows)
+                                    for hr in hrs.itertuples():
+                                        try:
+                                            top_hrs.append({
+                                                'exit_velocity': float(hr.launch_speed),
+                                                'batter_id': int(hr.batter),
+                                                'player': f"Batter {int(hr.batter)}",
+                                                'pitcher': str(getattr(hr, 'player_name', 'Unknown')),
+                                                'date': str(getattr(hr, 'game_date', 'Unknown')),
+                                                'distance': float(hr.hit_distance_sc) if pd.notna(hr.hit_distance_sc) else 0,
+                                                'launch_angle': float(hr.launch_angle) if pd.notna(hr.launch_angle) else 0,
+                                                'pitch_velocity': float(hr.release_speed) if pd.notna(hr.release_speed) else 0,
+                                                'pitch_type': str(getattr(hr, 'pitch_type', 'Unknown')),
+                                                'team': str(getattr(hr, 'batting_team', getattr(hr, 'home_team', 'Unknown'))),
+                                                'description': str(getattr(hr, 'des', 'No description')),
+                                                'game_pk': str(getattr(hr, 'game_pk', ''))
+                                            })
+                                        except (ValueError, TypeError) as e:
+                                            logger.debug(f"Skipping row due to conversion error: {e}")
                                             continue
-                                        
-                                        top_hrs.append({
-                                            'exit_velocity': float(exit_vel),
-                                            'batter_id': int(batter_id),  # Store ID for batch lookup later
-                                            'player': f"Batter {batter_id}",  # Temporary, will be replaced
-                                            'pitcher': str(hr.get('player_name', 'Unknown')),  # This is actually the pitcher
-                                            'date': str(hr.get('game_date', 'Unknown')),
-                                            'distance': float(hr.get('hit_distance_sc', 0)) if pd.notna(hr.get('hit_distance_sc')) else 0,
-                                            'launch_angle': float(hr.get('launch_angle', 0)) if pd.notna(hr.get('launch_angle')) else 0,
-                                            'pitch_velocity': float(hr.get('release_speed', 0)) if pd.notna(hr.get('release_speed')) else 0,
-                                            'pitch_type': str(hr.get('pitch_type', 'Unknown')),
-                                            'team': str(hr.get('batting_team', hr.get('home_team', 'Unknown'))),
-                                            'description': str(hr.get('des', 'No description')),
-                                            'game_pk': str(hr.get('game_pk', ''))
-                                        })
-                                    except (ValueError, TypeError) as e:
-                                        logger.debug(f"Skipping row due to conversion error: {e}")
-                                        continue
-                                
-                                # Keep only top N
-                                top_hrs = sorted(top_hrs, key=lambda x: x['exit_velocity'], reverse=True)[:limit]
-                                logger.info(f"  Found {len(hrs)} home runs, current top EV: {top_hrs[0]['exit_velocity']:.1f} mph")
+
+                                    # Keep only top N
+                                    top_hrs = sorted(top_hrs, key=lambda x: x['exit_velocity'], reverse=True)[:limit]
+                                    logger.info(f"  Found {len(hrs)} home runs, current top EV: {top_hrs[0]['exit_velocity']:.1f} mph")
                         
                     except Exception as e:
                         logger.error(f"Error fetching {year}-{month:02d}: {str(e)}")
@@ -1707,7 +1687,7 @@ def create_server():
             
         except Exception as e:
             logger.error(f"Error getting top home runs: {str(e)}")
-            return f"Error: {str(e)}"
+            return json.dumps({"error": str(e)})
     
     @mcp.tool()
     async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None,
@@ -1794,11 +1774,15 @@ def create_server():
                     logger.info(f"Fetching chunk {i}/{len(date_chunks)}: {chunk_start} to {chunk_end}")
                     chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
                     if not chunk_data.empty:
-                        # If we're looking for specific events, filter early to reduce memory usage
+                        # Apply all possible filters early to reduce memory usage
                         if result:
                             chunk_data = chunk_data[chunk_data['events'] == result]
                         if min_ev:
                             chunk_data = chunk_data[chunk_data['launch_speed'] >= min_ev]
+                        if min_pitch_velo:
+                            chunk_data = chunk_data[chunk_data['release_speed'] >= min_pitch_velo]
+                        if player_id:
+                            chunk_data = chunk_data[chunk_data['batter'] == player_id]
                         if not chunk_data.empty:
                             all_data.append(chunk_data)
                             logger.info(f"  Found {len(chunk_data)} matching events in this chunk")
@@ -1807,31 +1791,13 @@ def create_server():
                     continue
             
             if not all_data:
-                return f"No statcast data found for date range {start_date} to {end_date}"
+                return json.dumps({"error": f"No statcast data found for date range {start_date} to {end_date}"})
             
             # Combine all chunks
             data = pd.concat(all_data, ignore_index=True) if len(all_data) > 1 else all_data[0]
             
-            # Add batter names before filtering
-            data = add_batter_names_to_data(data)
-            
-            # Apply filters efficiently
-            if result:
-                data = data[data['events'] == result]
-                if data.empty:
-                    return f"No {result} events found in the specified date range"
-            
-            if min_ev:
-                data = data[data['launch_speed'] >= min_ev]
-            
-            if min_pitch_velo:
-                data = data[data['release_speed'] >= min_pitch_velo]
-                if data.empty:
-                    return f"No pitches found with velocity >= {min_pitch_velo} mph in the specified criteria"
-    
-            # Apply pitch type filter
+            # Apply pitch type filter (complex logic not suitable for chunk loop)
             if pitch_type:
-                import numpy as np
                 pitch_filter = None
                 if isinstance(pitch_type, str):
                     pitch_type_upper = pitch_type.upper()
@@ -1850,14 +1816,14 @@ def create_server():
                     data = data[data['pitch_type'] == pitch_type]
 
                 if data.empty:
-                    return f"No pitches matching pitch filter {pitch_type} found in the specified criteria"
-    
-            # Apply player filter
-            if player_id:
-                data = data[data['batter'] == player_id]
-                if data.empty:
-                    return f"No data found for {player_name} in the specified criteria"
+                    return json.dumps({"error": f"No pitches matching pitch filter {pitch_type} found in the specified criteria"})
+
+            if data.empty:
+                return json.dumps({"error": f"No data found matching the specified criteria"})
             
+            # Add batter names after all filtering to minimize lookups
+            data = add_batter_names_to_data(data)
+
             # Determine sort column
             sort_column_map = {
                 'exit_velocity': 'launch_speed',
@@ -1871,7 +1837,7 @@ def create_server():
                 'count': None,
             }
             sort_column = sort_column_map.get(sort_by, 'launch_speed')
-            
+
             # Vectorized team identification (much faster than apply)
             if 'inning_topbot' in data.columns and 'home_team' in data.columns and 'away_team' in data.columns:
                 data['batting_team'] = np.where(
@@ -1884,15 +1850,11 @@ def create_server():
             
             # Handle team grouping if requested
             if group_by == 'team':
-                # Group by team and calculate aggregates
-                import pandas as pd
-                import numpy as np
-                
                 # Remove rows with null values when applicable
                 if sort_column:
                     data = data.dropna(subset=[sort_column])
                     if data.empty:
-                        return f"No data available for sorting by {sort_by}"
+                        return json.dumps({"error": f"No data available for sorting by {sort_by}"})
                 
                 # Group by team and calculate statistics
                 team_stats = data.groupby('batting_team').agg({
@@ -1903,11 +1865,17 @@ def create_server():
                     'release_spin_rate': 'mean',
                     'estimated_ba_using_speedangle': 'mean',
                     'estimated_woba_using_speedangle': 'mean',
-                    'barrel': lambda x: (x == 1).sum() if 'barrel' in data.columns else 0
                 }).round(2)
-                
+
+                # Calculate barrel count separately to avoid lambda naming issues
+                if 'barrel' in data.columns:
+                    barrel_counts = data.groupby('batting_team')['barrel'].apply(lambda x: (x == 1).sum())
+                    team_stats['barrel_count'] = barrel_counts
+                else:
+                    team_stats['barrel_count'] = 0
+
                 # Flatten column names
-                team_stats.columns = ['_'.join(col).strip() for col in team_stats.columns.values]
+                team_stats.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in team_stats.columns.values]
                 
                 # Sort by the main metric
                 sort_col_for_team = 'event_count'
@@ -1954,7 +1922,7 @@ def create_server():
                         "avg_spin_rate": float(row.get('release_spin_rate_mean', 0)) if 'release_spin_rate_mean' in row else None,
                         "avg_xba": float(row.get('estimated_ba_using_speedangle_mean', 0)) if 'estimated_ba_using_speedangle_mean' in row else None,
                         "avg_xwoba": float(row.get('estimated_woba_using_speedangle_mean', 0)) if 'estimated_woba_using_speedangle_mean' in row else None,
-                        "barrel_count": int(row.get('barrel_<lambda>', 0)) if 'barrel_<lambda>' in row else 0,
+                        "barrel_count": int(row.get('barrel_count', 0)),
                         "top_play_video": top_play_video if top_play_video else None
                     }
                     leaderboard.append(entry)
@@ -1985,13 +1953,10 @@ def create_server():
 
             # Handle player grouping if requested
             if group_by == 'player':
-                import pandas as pd
-                import numpy as np
-
                 if sort_column:
                     data = data.dropna(subset=[sort_column])
                     if data.empty:
-                        return f"No data available for sorting by {sort_by}"
+                        return json.dumps({"error": f"No data available for sorting by {sort_by}"})
 
                 data['player_display'] = data['batter_name'].where(data['batter_name'].notna(), data['batter'].apply(lambda x: f"Player {x}"))
                 data['player_id'] = data['batter']
@@ -2107,7 +2072,7 @@ def create_server():
             data = data.dropna(subset=[sort_column])
             
             if data.empty:
-                return f"No data available for sorting by {sort_by}"
+                return json.dumps({"error": f"No data available for sorting by {sort_by}"})
             
             # Sort by specified metric
             ascending = (order.lower() == 'asc')
@@ -2115,31 +2080,25 @@ def create_server():
             
             # Create leaderboard
             leaderboard = []
-            for idx, row in sorted_data.iterrows():
+            for rank, (idx, row) in enumerate(sorted_data.iterrows(), 1):
                 # Get game_pk for video links
                 game_pk = row.get('game_pk')
-                
+
                 # Generate video-related URLs
                 video_info = {}
                 if game_pk:
-                    # MLB.com game highlights page
                     video_info['game_highlights_url'] = f"https://www.mlb.com/gameday/{game_pk}/video"
-                    
-                    # MLB Film Room search URL for this player and date
-                    player_name = str(row.get('player_name', '')).replace(' ', '+')
+
+                    pitcher_name = str(row.get('player_name', '')).replace(' ', '+')
                     game_date = str(row.get('game_date', ''))
-                    if player_name and game_date:
-                        video_info['film_room_search'] = f"https://www.mlb.com/video/search?q={player_name}+{game_date}"
-                    
-                    # Include game_pk for API access
+                    if pitcher_name and game_date:
+                        video_info['film_room_search'] = f"https://www.mlb.com/video/search?q={pitcher_name}+{game_date}"
+
                     video_info['game_pk'] = str(game_pk)
-                    
-                    # MLB Stats API endpoint for game highlights
                     video_info['api_highlights_endpoint'] = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={game_pk}&hydrate=game(content(highlights(highlights)))"
-                
-                # Always generate comprehensive video links when game_pk is available
+
                 entry = {
-                    "rank": idx + 1,
+                    "rank": rank,
                     "player": str(row.get('batter_name', f"Player {row.get('batter', 'Unknown')}")),
                     "pitcher": str(row.get('player_name', 'Unknown')),  # player_name is the pitcher
                     "date": str(row.get('game_date', 'Unknown')),
@@ -2184,7 +2143,7 @@ def create_server():
             
         except Exception as e:
             logger.error(f"Error getting statcast leaderboard: {str(e)}")
-            return f"Error: {str(e)}"
+            return json.dumps({"error": str(e)})
     
     @mcp.tool()
     async def player_statcast(player_name: str, start_date: Optional[str] = None, end_date: Optional[str] = None,
