@@ -3,10 +3,12 @@
 
 from fastmcp import FastMCP
 from typing import Optional, Dict, Any, List, Tuple
+import asyncio
 import logging
 from datetime import datetime, timedelta
 import hashlib
 import json
+import time
 import calendar
 import re
 from functools import lru_cache
@@ -383,12 +385,12 @@ def get_cache_key(start_date: str, end_date: str, **kwargs) -> str:
     key_data = f"{start_date}_{end_date}_{json.dumps(kwargs, sort_keys=True)}"
     return hashlib.md5(key_data.encode()).hexdigest()
 
-def is_cache_valid(cache_entry: dict) -> bool:
-    """Check if cache entry is still valid (15 minute TTL)"""
+def is_cache_valid(cache_entry: dict, ttl_seconds: int = 900) -> bool:
+    """Check if cache entry is still valid (default 15 minute TTL)"""
     if not cache_entry:
         return False
     cached_time = datetime.fromisoformat(cache_entry['timestamp'])
-    return (datetime.now() - cached_time).seconds < 900
+    return (datetime.now() - cached_time).total_seconds() < ttl_seconds
 
 def get_player_names_batch(player_ids: list) -> dict:
     """Get player names from IDs in batch with caching"""
@@ -453,6 +455,149 @@ def add_batter_names_to_data(data, batter_col='batter'):
     data['batter_name'] = data[batter_col].map(batter_names)
 
     return data
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+def validate_date(date_str: str, param_name: str = "date") -> str:
+    """Validate and return a YYYY-MM-DD date string.
+
+    Raises ValueError with a user-friendly message on bad input.
+    """
+    if not date_str or not isinstance(date_str, str):
+        raise ValueError(f"{param_name} is required and must be a string in YYYY-MM-DD format")
+    date_str = date_str.strip()
+    if not _DATE_RE.match(date_str):
+        raise ValueError(f"{param_name} '{date_str}' is not in YYYY-MM-DD format")
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"{param_name} '{date_str}' is not a valid calendar date")
+    return date_str
+
+def validate_year(year: Any) -> int:
+    """Coerce *year* to int and ensure it is within the valid MLB range."""
+    try:
+        year = int(year)
+    except (ValueError, TypeError):
+        raise ValueError(f"year must be a number, got '{year}'")
+    current_year = datetime.now().year
+    if year < 1871 or year > current_year:
+        raise ValueError(f"year must be between 1871 and {current_year}, got {year}")
+    return year
+
+def sanitize_player_name(name: str) -> str:
+    """Basic sanitisation – strip whitespace and reject obviously bogus names."""
+    if not name or not isinstance(name, str):
+        raise ValueError("player name is required")
+    name = name.strip()
+    if len(name) < 2 or len(name) > 80:
+        raise ValueError(f"player name '{name}' is too short or too long")
+    # Allow letters, spaces, hyphens, apostrophes, periods
+    if not re.match(r"^[A-Za-z .'\-]+$", name):
+        raise ValueError(f"player name '{name}' contains invalid characters")
+    return name
+
+# ---------------------------------------------------------------------------
+# Structured error responses
+# ---------------------------------------------------------------------------
+
+def _error_response(message: str, code: str = "server_error",
+                    details: Optional[Dict[str, Any]] = None) -> str:
+    """Return a consistently-structured JSON error string.
+
+    *code* should be one of:
+      - ``client_error``   – bad input, missing params, unknown player
+      - ``external_error`` – upstream API failure, timeout
+      - ``server_error``   – unexpected internal problem
+    """
+    payload: Dict[str, Any] = {"error": message, "code": code}
+    if details:
+        payload["details"] = details
+    return json.dumps(payload)
+
+# ---------------------------------------------------------------------------
+# Player-ID lookup cache  (name -> MLBAM id)
+# ---------------------------------------------------------------------------
+
+# Maps  "first last" (lower) -> mlbam_id
+_player_id_cache: Dict[str, int] = {}
+
+def lookup_player_id(player_name: str) -> int:
+    """Resolve *player_name* to an MLBAM ID, using a session-lifetime cache."""
+    key = player_name.strip().lower()
+    if key in _player_id_cache:
+        return _player_id_cache[key]
+
+    pb = load_pybaseball()
+    from pybaseball import playerid_lookup
+
+    parts = player_name.split()
+    last_name = parts[-1]
+    first_name = parts[0] if len(parts) > 1 else ""
+    results = playerid_lookup(last_name, first_name)
+
+    if results.empty and len(parts) >= 2:
+        # Try flipped name order
+        results = playerid_lookup(parts[0], " ".join(parts[1:]))
+
+    if results.empty:
+        raise LookupError(f"No player found matching '{player_name}'")
+
+    mlbam_id = int(results.iloc[0]["key_mlbam"])
+    _player_id_cache[key] = mlbam_id
+    return mlbam_id
+
+# ---------------------------------------------------------------------------
+# Retry with exponential back-off
+# ---------------------------------------------------------------------------
+
+async def _fetch_with_retry(fn, *args, max_retries: int = 3,
+                            base_delay: float = 1.0, **kwargs):
+    """Run a blocking *fn* in a thread with retry + exponential backoff.
+
+    This also wraps the call in ``asyncio.to_thread`` so it doesn't block the
+    event loop.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"Attempt {attempt + 1}/{max_retries + 1} failed for "
+                    f"{getattr(fn, '__name__', fn)}: {exc}  – retrying in {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"All {max_retries + 1} attempts failed for "
+                    f"{getattr(fn, '__name__', fn)}: {exc}"
+                )
+    raise last_exc  # type: ignore[misc]
+
+# ---------------------------------------------------------------------------
+# Cache management
+# ---------------------------------------------------------------------------
+
+MAX_QUERY_CACHE_SIZE = 512
+
+def _cache_put(key: str, data: str) -> None:
+    """Store *data* in query_cache with a timestamp, pruning if needed."""
+    query_cache[key] = {"data": data, "timestamp": datetime.now().isoformat()}
+    # Prune oldest entries when cache exceeds limit
+    if len(query_cache) > MAX_QUERY_CACHE_SIZE:
+        oldest_keys = sorted(
+            query_cache, key=lambda k: query_cache[k].get("timestamp", "")
+        )[: len(query_cache) - MAX_QUERY_CACHE_SIZE]
+        for k in oldest_keys:
+            query_cache.pop(k, None)
 
 @smithery.server()
 def create_server():
@@ -757,113 +902,98 @@ def create_server():
     async def get_player_stats(name: str, start_date: Optional[str] = None, end_date: Optional[str] = None) -> str:
         """
         Get player statcast data by name (optionally filter by date range: YYYY-MM-DD)
-        
+
         Args:
             name: Player name to search for
             start_date: Start date in YYYY-MM-DD format (optional)
             end_date: End date in YYYY-MM-DD format (optional)
-        
+
         Returns:
             JSON string of player statistics
         """
         try:
-            pb = load_pybaseball()
-            
-            # Import functions from pybaseball
-            from pybaseball import playerid_lookup, statcast_batter
-            
-            # Search for player
-            last_name = name.split()[-1]
-            first_name = name.split()[0] if len(name.split()) > 1 else ''
-            results = playerid_lookup(last_name, first_name)
-            if results.empty:
-                return f"No player found matching '{name}'"
-    
-            # Use mlbam ID for statcast queries (not fangraphs)
-            player_id = results.iloc[0]['key_mlbam']
-            
-            # Get statcast data
+            name = sanitize_player_name(name)
+            if start_date:
+                start_date = validate_date(start_date, "start_date")
+            if end_date:
+                end_date = validate_date(end_date, "end_date")
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        try:
+            player_id = await asyncio.to_thread(lookup_player_id, name)
+        except LookupError as e:
+            return _error_response(str(e), "client_error")
+
+        try:
+            from pybaseball import statcast_batter
             import pandas as pd
+
             if start_date and end_date:
-                data = statcast_batter(start_date, end_date, player_id)
+                data = await _fetch_with_retry(statcast_batter, start_date, end_date, player_id)
             else:
-                # Default to active season through today's date
-                from datetime import datetime
                 today = datetime.now()
                 season_year = today.year if today.month >= 3 else today.year - 1
                 season_start = f"{season_year}-03-01"
-                data = statcast_batter(season_start, today.strftime('%Y-%m-%d'), player_id)
-            
+                data = await _fetch_with_retry(
+                    statcast_batter, season_start, today.strftime('%Y-%m-%d'), player_id
+                )
+
             if data.empty:
-                return f"No statcast data found for {name}"
-            
-            # Format results
+                return _error_response(f"No statcast data found for {name}", "client_error")
+
+            hit_events = data['events'].isin(['single', 'double', 'triple', 'home_run'])
             stats = {
                 "player": name,
-                "games": len(data['game_date'].unique()),
+                "games": int(data['game_date'].nunique()),
                 "at_bats": len(data),
-                "hits": len(data[data['events'] == 'single']) + len(data[data['events'] == 'double']) + 
-                        len(data[data['events'] == 'triple']) + len(data[data['events'] == 'home_run']),
-                "home_runs": len(data[data['events'] == 'home_run']),
-                "avg_exit_velocity": data['launch_speed'].mean(),
-                "avg_launch_angle": data['launch_angle'].mean(),
-                "barrel_rate": (len(data[data['barrel'] == 1]) / len(data) * 100) if 'barrel' in data.columns else None
+                "hits": int(hit_events.sum()),
+                "home_runs": int((data['events'] == 'home_run').sum()),
+                "avg_exit_velocity": round(float(data['launch_speed'].mean()), 2) if data['launch_speed'].notna().any() else None,
+                "avg_launch_angle": round(float(data['launch_angle'].mean()), 2) if data['launch_angle'].notna().any() else None,
+                "barrel_rate": round(float((data['barrel'] == 1).sum() / len(data) * 100), 2) if 'barrel' in data.columns else None
             }
-            
-            import json
+
             return json.dumps(stats, indent=2)
-            
+
         except Exception as e:
             logger.error(f"Error getting player stats: {str(e)}")
-            return f"Error: {str(e)}"
+            return _error_response(str(e), "external_error")
     
     @mcp.tool(name="get_team_stats", description="Fetch team batting or pitching totals for a season")
     async def get_team_stats(team: str, year: Any, stat_type: str = "batting") -> str:
         """
         Get team stats for a given team and year. Type can be 'batting' or 'pitching'
-        
+
         Args:
             team: Team name or abbreviation
             year: Year/season to get stats for
             stat_type: Type of stats - 'batting' or 'pitching'
-        
+
         Returns:
             JSON string of team statistics
         """
         try:
-            # Convert string inputs to proper types
-            year = int(year)
-            
-            pb = load_pybaseball()
-            
-            # Import functions from pybaseball
+            year = validate_year(year)
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        stat_type = (stat_type or "batting").lower()
+        if stat_type not in ("batting", "pitching"):
+            return _error_response(
+                f"Invalid stat_type: {stat_type}. Use 'batting' or 'pitching'",
+                "client_error",
+            )
+
+        try:
+            load_pybaseball()
             from pybaseball import team_batting, team_pitching
-            
-            # Validate year
-            from datetime import datetime
-            current_year = datetime.now().year
-            if year < 1871 or year > current_year:
-                return f"Invalid year: {year}. Please use a year between 1871 and {current_year}"
-            
-            # Get team stats
-            logger.info(f"Fetching {stat_type} stats for {year}")
-            
-            try:
-                if stat_type.lower() == "batting":
-                    data = team_batting(year)
-                elif stat_type.lower() == "pitching":
-                    data = team_pitching(year)
-                else:
-                    return f"Invalid stat_type: {stat_type}. Use 'batting' or 'pitching'"
-            except Exception as e:
-                logger.error(f"Error fetching team stats: {str(e)}")
-                return f"Error fetching {stat_type} stats for {year}: {str(e)}"
-            
-            # Find the team
             import pandas as pd
-            
-            # Try to find team abbreviation
-            team_lower = team.lower()
+
+            logger.info(f"Fetching {stat_type} stats for {year}")
+            fetch_fn = team_batting if stat_type == "batting" else team_pitching
+            data = await _fetch_with_retry(fetch_fn, year)
+
             team_abbr = resolve_team_alias(team)
             
             # Try exact match first
@@ -878,88 +1008,93 @@ def create_server():
                 team_data = data[data['Team'].str.contains(team, case=False, na=False)]
             
             if team_data.empty:
-                # List available teams
                 available_teams = data['Team'].unique().tolist()
-                return f"No data found for team '{team}' in {year}. Available teams: {', '.join(sorted(available_teams))}"
-            
-            # Convert to dict and format
+                return _error_response(
+                    f"No data found for team '{team}' in {year}",
+                    "client_error",
+                    {"available_teams": sorted(available_teams)},
+                )
+
             result = team_data.iloc[0].to_dict()
-            
-            # Clean up NaN values
+
             import numpy as np
-            import json
             for key, value in result.items():
                 if isinstance(value, float) and np.isnan(value):
                     result[key] = None
-                    
+
             return json.dumps(result, indent=2)
-            
+
         except Exception as e:
             logger.error(f"Error getting team stats: {str(e)}")
-            return f"Error: {str(e)}"
+            return _error_response(str(e), "external_error")
     
     @mcp.tool(name="get_leaderboard", description="Get MLB leaderboard for a stat and season")
     async def get_leaderboard(stat: str, season: Any, leaderboard_type: str = "batting", limit: Any = 10) -> str:
         """
         Get leaderboard for a given stat and season
-        
+
         Args:
             stat: Statistic to get leaderboard for (e.g., 'HR', 'AVG', 'ERA')
             season: Season year to get leaderboard for
             leaderboard_type: Type of leaderboard - 'batting' or 'pitching'
             limit: Number of results to return (default 10)
-        
+
         Returns:
             JSON string of leaderboard data
         """
         try:
-            # Convert string inputs to proper types
-            season = int(season)
-            limit = int(limit)
-            
-            pb = load_pybaseball()
-            
-            # Import functions from pybaseball
+            season = validate_year(season)
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        try:
+            limit = max(1, min(int(limit), 50))
+        except (ValueError, TypeError):
+            limit = 10
+
+        leaderboard_type = (leaderboard_type or "batting").lower()
+        if leaderboard_type not in ("batting", "pitching"):
+            return _error_response(
+                f"Invalid leaderboard_type: {leaderboard_type}. Use 'batting' or 'pitching'",
+                "client_error",
+            )
+
+        try:
+            load_pybaseball()
             from pybaseball import batting_stats, pitching_stats
-            
-            # Get the appropriate leaderboard
-            if leaderboard_type.lower() == "batting":
-                data = batting_stats(season)
-            elif leaderboard_type.lower() == "pitching":
-                data = pitching_stats(season)
-            else:
-                return f"Invalid leaderboard_type: {leaderboard_type}. Use 'batting' or 'pitching'"
-            
-            # Check if stat exists
+
+            fetch_fn = batting_stats if leaderboard_type == "batting" else pitching_stats
+            data = await _fetch_with_retry(fetch_fn, season)
+
             if stat not in data.columns:
-                return f"Stat '{stat}' not found. Available stats: {', '.join(data.columns)}"
-            
-            # Sort by the stat and get top players
-            import pandas as pd
+                return _error_response(
+                    f"Stat '{stat}' not found",
+                    "client_error",
+                    {"available_stats": list(data.columns)},
+                )
+
             sorted_data = data.sort_values(by=stat, ascending=False).head(limit)
-            
-            # Create leaderboard
+
             leaderboard = []
-            for idx, row in sorted_data.iterrows():
+            for rank, (idx, row) in enumerate(sorted_data.iterrows(), 1):
                 entry = {
-                    "rank": idx + 1,
+                    "rank": rank,
                     "player": row.get('Name', 'Unknown'),
                     "team": row.get('Team', 'Unknown'),
                     stat: row[stat]
                 }
                 leaderboard.append(entry)
-            
-            import json
+
             return json.dumps({
                 "stat": stat,
                 "season": season,
                 "type": leaderboard_type,
                 "leaderboard": leaderboard
             }, indent=2)
-            
+
         except Exception as e:
             logger.error(f"Error getting leaderboard: {str(e)}")
-            return f"Error: {str(e)}"
+            return _error_response(str(e), "external_error")
     
     @mcp.tool()
     async def team_season_stats(year: Any, stat: str = "exit_velocity", min_result_type: Optional[str] = None) -> str:
@@ -976,62 +1111,65 @@ def create_server():
             JSON string of team rankings by selected metric
         """
         try:
-            # Convert string inputs to proper types
-            year = int(year)
-            
-            # Special cache for season-wide team stats (24-hour TTL)
+            year = validate_year(year)
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        VALID_STATS = {'exit_velocity', 'distance', 'launch_angle', 'barrel_rate', 'hard_hit_rate', 'sweet_spot_rate'}
+        if stat not in VALID_STATS:
+            return _error_response(
+                f"Invalid stat: {stat}. Use one of: {', '.join(sorted(VALID_STATS))}",
+                "client_error",
+            )
+
+        try:
             cache_key = f"team_season_{year}_{stat}_{min_result_type}"
-            
-            if cache_key in query_cache:
-                cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
-                if (datetime.now() - cached_time).seconds < 86400:  # 24 hour cache
-                    logger.info(f"Using cached team season data for {cache_key}")
-                    return query_cache[cache_key]['data']
-            
-            pb = load_pybaseball()
+            if is_cache_valid(query_cache.get(cache_key), ttl_seconds=86400):
+                logger.info(f"Using cached team season data for {cache_key}")
+                return query_cache[cache_key]['data']
+
+            load_pybaseball()
             from pybaseball import statcast
-            try:
-                from pybaseball import statcast_homeruns
-            except ImportError:
-                statcast_homeruns = None
             import pandas as pd
             import numpy as np
-            
-            # For current year, use year-to-date. For past years, use April-October
+
             if year == datetime.now().year:
                 start_date = f"{year}-04-01"
                 end_date = datetime.now().strftime('%Y-%m-%d')
             else:
-                start_date = f"{year}-04-01" 
+                start_date = f"{year}-04-01"
                 end_date = f"{year}-10-31"
-            
+
             logger.info(f"Fetching team season stats for {year}, stat={stat}")
-            
-            # Use a sampling approach for current season to avoid timeouts
-            # Sample every 7th day to get representative data quickly
-            sample_dates = []
-            current = datetime.strptime(start_date, '%Y-%m-%d')
-            end = datetime.strptime(end_date, '%Y-%m-%d')
-            
-            while current <= end:
-                sample_dates.append(current.strftime('%Y-%m-%d'))
-                current += timedelta(days=7)
-            
-            # Fetch sample data
+
+            # Use chunked sampling: fetch 2-day windows every 14 days for representative data
+            # This reduces API calls by ~3.5x vs fetching individual days every 7 days
             all_data = []
-            for sample_date in sample_dates:
+            current = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            sample_count = 0
+
+            while current <= end_dt:
+                sample_end = min(current + timedelta(days=1), end_dt)
                 try:
-                    # Get one day of data
-                    data = statcast(start_dt=sample_date, end_dt=sample_date)
+                    data = await _fetch_with_retry(
+                        statcast,
+                        start_dt=current.strftime('%Y-%m-%d'),
+                        end_dt=sample_end.strftime('%Y-%m-%d'),
+                        max_retries=2,
+                    )
                     if not data.empty:
                         all_data.append(data)
+                    sample_count += 1
                 except Exception as e:
-                    logger.error(f"Error fetching data for {sample_date}: {str(e)}")
-                    continue
-            
+                    logger.debug(f"Error fetching data for {current.strftime('%Y-%m-%d')}: {str(e)}")
+                current += timedelta(days=14)
+
+            logger.info(f"Fetched {sample_count} sample windows for team season stats")
+
             if not all_data:
-                return f"No data available for {year} season"
-            
+                return _error_response(f"No data available for {year} season", "external_error")
+
             # Combine samples
             data = pd.concat(all_data, ignore_index=True)
             
@@ -1108,23 +1246,18 @@ def create_server():
                 "year": year,
                 "stat": stat,
                 "filter": min_result_type,
-                "sample_size": f"{len(sample_dates)} days sampled",
+                "sample_size": f"{sample_count} sample windows",
                 "total_events": len(data),
                 "leaderboard": leaderboard
             }, indent=2, default=str)
             
-            # Cache the result
-            query_cache[cache_key] = {
-                'data': response,
-                'timestamp': datetime.now().isoformat()
-            }
-            
+            _cache_put(cache_key, response)
             return response
-            
+
         except Exception as e:
             logger.error(f"Error getting team season stats: {str(e)}")
-            return f"Error: {str(e)}"
-    
+            return _error_response(str(e), "external_error")
+
     @mcp.tool()
     async def team_pitching_stats(year: Any, stat: str = "velocity", pitch_type: Optional[str] = None) -> str:
         """
@@ -1141,64 +1274,69 @@ def create_server():
             JSON string of team pitching rankings by selected metric
         """
         try:
-            # Convert string inputs to proper types
-            year = int(year)
-            
-            # Special cache for season-wide pitching stats (24-hour TTL)
+            year = validate_year(year)
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        VALID_PITCH_STATS = {'velocity', 'spin_rate', 'movement', 'whiff_rate', 'chase_rate', 'zone_rate', 'ground_ball_rate', 'xera'}
+        if stat not in VALID_PITCH_STATS:
+            return _error_response(
+                f"Invalid stat: {stat}. Use one of: {', '.join(sorted(VALID_PITCH_STATS))}",
+                "client_error",
+            )
+
+        try:
             cache_key = f"team_pitching_{year}_{stat}_{pitch_type}"
-            
-            if cache_key in query_cache:
-                cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
-                if (datetime.now() - cached_time).seconds < 86400:  # 24 hour cache
-                    logger.info(f"Using cached team pitching data for {cache_key}")
-                    return query_cache[cache_key]['data']
-            
-            pb = load_pybaseball()
+            if is_cache_valid(query_cache.get(cache_key), ttl_seconds=86400):
+                logger.info(f"Using cached team pitching data for {cache_key}")
+                return query_cache[cache_key]['data']
+
+            load_pybaseball()
             from pybaseball import statcast
             import pandas as pd
             import numpy as np
-            
-            # For current year, use year-to-date. For past years, use April-October
+
             if year == datetime.now().year:
                 start_date = f"{year}-04-01"
                 end_date = datetime.now().strftime('%Y-%m-%d')
             else:
-                start_date = f"{year}-04-01" 
+                start_date = f"{year}-04-01"
                 end_date = f"{year}-10-31"
-            
+
             logger.info(f"Fetching team pitching stats for {year}, stat={stat}")
-            
-            # Use sampling approach (every 7th day)
-            sample_dates = []
-            current = datetime.strptime(start_date, '%Y-%m-%d')
-            end = datetime.strptime(end_date, '%Y-%m-%d')
-            
-            while current <= end:
-                sample_dates.append(current.strftime('%Y-%m-%d'))
-                current += timedelta(days=7)
-            
-            # Fetch sample data
+
             all_data = []
-            for sample_date in sample_dates:
+            current = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            sample_count = 0
+
+            while current <= end_dt:
+                sample_end = min(current + timedelta(days=1), end_dt)
                 try:
-                    data = statcast(start_dt=sample_date, end_dt=sample_date)
+                    data = await _fetch_with_retry(
+                        statcast,
+                        start_dt=current.strftime('%Y-%m-%d'),
+                        end_dt=sample_end.strftime('%Y-%m-%d'),
+                        max_retries=2,
+                    )
                     if not data.empty:
                         all_data.append(data)
+                    sample_count += 1
                 except Exception as e:
-                    logger.error(f"Error fetching data for {sample_date}: {str(e)}")
-                    continue
-            
+                    logger.debug(f"Error fetching data for {current.strftime('%Y-%m-%d')}: {str(e)}")
+                current += timedelta(days=14)
+
+            logger.info(f"Fetched {sample_count} sample windows for team pitching stats")
+
             if not all_data:
-                return f"No data available for {year} season"
-            
-            # Combine samples
+                return _error_response(f"No data available for {year} season", "external_error")
+
             data = pd.concat(all_data, ignore_index=True)
-            
-            # Filter by pitch type if specified
+
             if pitch_type:
                 data = data[data['pitch_type'] == pitch_type]
                 if data.empty:
-                    return f"No data found for pitch type {pitch_type}"
+                    return _error_response(f"No data found for pitch type {pitch_type}", "client_error")
             
             # Add pitching team using vectorized operations
             data['pitching_team'] = np.where(
@@ -1301,23 +1439,18 @@ def create_server():
                 "year": year,
                 "stat": stat,
                 "pitch_type_filter": pitch_type,
-                "sample_size": f"{len(sample_dates)} days sampled",
+                "sample_size": f"{sample_count} sample windows",
                 "total_pitches": len(data),
                 "leaderboard": leaderboard
             }, indent=2, default=str)
             
-            # Cache the result
-            query_cache[cache_key] = {
-                'data': response,
-                'timestamp': datetime.now().isoformat()
-            }
-            
+            _cache_put(cache_key, response)
             return response
-            
+
         except Exception as e:
             logger.error(f"Error getting team pitching stats: {str(e)}")
-            return f"Error: {str(e)}"
-    
+            return _error_response(str(e), "external_error")
+
     @mcp.tool()
     async def statcast_count(start_date: str, end_date: str, result_type: str = "home_run",
                             min_distance: Optional[Any] = None, min_exit_velocity: Optional[Any] = None,
@@ -1341,7 +1474,12 @@ def create_server():
             JSON with count, breakdown by year, and top examples
         """
         try:
-            # Convert string inputs to proper types
+            start_date = validate_date(start_date, "start_date")
+            end_date = validate_date(end_date, "end_date")
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        try:
             if min_distance is not None:
                 min_distance = float(min_distance)
             if max_distance is not None:
@@ -1350,38 +1488,23 @@ def create_server():
                 min_exit_velocity = float(min_exit_velocity)
             if max_exit_velocity is not None:
                 max_exit_velocity = float(max_exit_velocity)
-    
-            # Look up player ID if player_name is provided
+        except (ValueError, TypeError) as e:
+            return _error_response(f"Invalid numeric filter: {e}", "client_error")
+
+        try:
             player_id = None
             if player_name:
                 try:
-                    pb = load_pybaseball()
-                    from pybaseball import playerid_lookup
-    
-                    last_name = player_name.split()[-1]
-                    first_name = player_name.split()[0] if len(player_name.split()) > 1 else ''
-                    results = playerid_lookup(last_name, first_name)
-    
-                    if results.empty:
-                        return json.dumps({
-                            "error": f"No player found matching '{player_name}'",
-                            "suggestion": "Please check the player name spelling"
-                        })
-    
-                    # Use mlbam ID for statcast queries
-                    player_id = results.iloc[0]['key_mlbam']
-                    logger.info(f"Found player ID {player_id} for {player_name}")
-    
-                except Exception as e:
-                    logger.error(f"Error looking up player: {str(e)}")
-                    return json.dumps({"error": f"Error looking up player: {str(e)}"})
-    
-            # Special cache for counting queries (24-hour TTL)
-            cache_key = f"count_{start_date}_{end_date}_{result_type}_{min_distance}_{min_exit_velocity}_{max_distance}_{max_exit_velocity}_{player_id}_{pitch_type}"
-            
-            if cache_key in query_cache:
-                cached_time = datetime.fromisoformat(query_cache[cache_key]['timestamp'])
-                if (datetime.now() - cached_time).seconds < 86400:  # 24 hour cache
+                    player_name = sanitize_player_name(player_name)
+                    player_id = await asyncio.to_thread(lookup_player_id, player_name)
+                except (ValueError, LookupError) as e:
+                    return _error_response(str(e), "client_error")
+
+            cache_key = get_cache_key(start_date, end_date, result_type=result_type,
+                                      min_distance=min_distance, min_exit_velocity=min_exit_velocity,
+                                      max_distance=max_distance, max_exit_velocity=max_exit_velocity,
+                                      player_id=player_id, pitch_type=pitch_type)
+            if is_cache_valid(query_cache.get(cache_key), ttl_seconds=86400):
                     logger.info(f"Using cached count data for {cache_key}")
                     return query_cache[cache_key]['data']
             
@@ -1403,11 +1526,10 @@ def create_server():
             for i, (chunk_start, chunk_end) in enumerate(date_chunks, 1):
                 try:
                     logger.info(f"Fetching chunk {i}/{len(date_chunks)}: {chunk_start} to {chunk_end}")
-                    if result == 'home_run' and statcast_homeruns is not None:
-                        chunk_data = statcast_homeruns(start_dt=chunk_start, end_dt=chunk_end)
-                    else:
-                        chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
-                    
+                    chunk_data = await _fetch_with_retry(
+                        statcast, start_dt=chunk_start, end_dt=chunk_end, max_retries=2,
+                    )
+
                     if not chunk_data.empty:
                         # Apply filters immediately to reduce memory
                         if result_type:
@@ -1529,17 +1651,12 @@ def create_server():
             
             response_json = json.dumps(response, indent=2, default=str)
             
-            # Cache the result
-            query_cache[cache_key] = {
-                'data': response_json,
-                'timestamp': datetime.now().isoformat()
-            }
-            
+            _cache_put(cache_key, response_json)
             return response_json
-            
+
         except Exception as e:
             logger.error(f"Error in statcast_count: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return _error_response(str(e), "external_error")
     
     @mcp.tool()
     async def top_home_runs(year_start: Any = 2023, year_end: Optional[Any] = None, 
@@ -1557,24 +1674,29 @@ def create_server():
             JSON string of top home runs
         """
         try:
-            # Convert string inputs to proper types
-            year_start = int(year_start)
-            if year_end is not None:
-                year_end = int(year_end)
-            limit = int(limit)
+            year_start = validate_year(year_start)
+            year_end = validate_year(year_end) if year_end is not None else datetime.now().year
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        try:
+            limit = max(1, min(int(limit), 50))
+        except (ValueError, TypeError):
+            limit = 5
+
+        try:
             if min_exit_velocity is not None:
                 min_exit_velocity = float(min_exit_velocity)
-                
-            if year_end is None:
-                year_end = datetime.now().year
-                
-            # Check cache first
+        except (ValueError, TypeError) as e:
+            return _error_response(f"Invalid min_exit_velocity: {e}", "client_error")
+
+        try:
             cache_key = f"top_hr_{year_start}_{year_end}_{limit}_{min_exit_velocity}"
             if cache_key in query_cache and is_cache_valid(query_cache[cache_key]):
                 logger.info(f"Using cached data for top home runs query")
                 return query_cache[cache_key]['data']
-            
-            pb = load_pybaseball()
+
+            load_pybaseball()
             from pybaseball import statcast
             import pandas as pd
             import numpy as np
@@ -1603,7 +1725,9 @@ def create_server():
                         logger.info(f"Checking {year} {calendar.month_name[month]}")
                         
                         # Query only home runs for this month
-                        month_data = statcast(start_dt=start_date, end_dt=end_date)
+                        month_data = await _fetch_with_retry(
+                            statcast, start_dt=start_date, end_dt=end_date, max_retries=2,
+                        )
                         
                         if not month_data.empty:
                             # Filter home runs
@@ -1614,44 +1738,39 @@ def create_server():
                                 hrs = hrs[hrs['launch_speed'] >= min_exit_velocity]
                             
                             if not hrs.empty:
-                                # Sort by exit velocity and get top ones
-                                hrs_sorted = hrs.sort_values('launch_speed', ascending=False)
-                                
-                                # Add to our running list
-                                for _, hr in hrs_sorted.iterrows():
-                                    try:
-                                        # Safely convert values, handling NAType
-                                        exit_vel = hr['launch_speed']
-                                        if pd.isna(exit_vel):
-                                            continue  # Skip rows with missing exit velocity
-                                        
-                                        # Note: player_name in statcast data is the pitcher's name
-                                        # The batter ID is in the 'batter' column
-                                        batter_id = hr.get('batter')
-                                        if pd.isna(batter_id):
+                                # Filter out rows with missing exit velocity or batter
+                                hrs = hrs.dropna(subset=['launch_speed', 'batter'])
+
+                                if not hrs.empty:
+                                    # Only keep candidates that could make the top N
+                                    min_threshold = top_hrs[-1]['exit_velocity'] if len(top_hrs) >= limit else 0
+                                    hrs = hrs[hrs['launch_speed'] > min_threshold]
+
+                                if not hrs.empty:
+                                    # Use itertuples for faster iteration (5-10x faster than iterrows)
+                                    for hr in hrs.itertuples():
+                                        try:
+                                            top_hrs.append({
+                                                'exit_velocity': float(hr.launch_speed),
+                                                'batter_id': int(hr.batter),
+                                                'player': f"Batter {int(hr.batter)}",
+                                                'pitcher': str(getattr(hr, 'player_name', 'Unknown')),
+                                                'date': str(getattr(hr, 'game_date', 'Unknown')),
+                                                'distance': float(hr.hit_distance_sc) if pd.notna(hr.hit_distance_sc) else 0,
+                                                'launch_angle': float(hr.launch_angle) if pd.notna(hr.launch_angle) else 0,
+                                                'pitch_velocity': float(hr.release_speed) if pd.notna(hr.release_speed) else 0,
+                                                'pitch_type': str(getattr(hr, 'pitch_type', 'Unknown')),
+                                                'team': str(getattr(hr, 'batting_team', getattr(hr, 'home_team', 'Unknown'))),
+                                                'description': str(getattr(hr, 'des', 'No description')),
+                                                'game_pk': str(getattr(hr, 'game_pk', ''))
+                                            })
+                                        except (ValueError, TypeError) as e:
+                                            logger.debug(f"Skipping row due to conversion error: {e}")
                                             continue
-                                        
-                                        top_hrs.append({
-                                            'exit_velocity': float(exit_vel),
-                                            'batter_id': int(batter_id),  # Store ID for batch lookup later
-                                            'player': f"Batter {batter_id}",  # Temporary, will be replaced
-                                            'pitcher': str(hr.get('player_name', 'Unknown')),  # This is actually the pitcher
-                                            'date': str(hr.get('game_date', 'Unknown')),
-                                            'distance': float(hr.get('hit_distance_sc', 0)) if pd.notna(hr.get('hit_distance_sc')) else 0,
-                                            'launch_angle': float(hr.get('launch_angle', 0)) if pd.notna(hr.get('launch_angle')) else 0,
-                                            'pitch_velocity': float(hr.get('release_speed', 0)) if pd.notna(hr.get('release_speed')) else 0,
-                                            'pitch_type': str(hr.get('pitch_type', 'Unknown')),
-                                            'team': str(hr.get('batting_team', hr.get('home_team', 'Unknown'))),
-                                            'description': str(hr.get('des', 'No description')),
-                                            'game_pk': str(hr.get('game_pk', ''))
-                                        })
-                                    except (ValueError, TypeError) as e:
-                                        logger.debug(f"Skipping row due to conversion error: {e}")
-                                        continue
-                                
-                                # Keep only top N
-                                top_hrs = sorted(top_hrs, key=lambda x: x['exit_velocity'], reverse=True)[:limit]
-                                logger.info(f"  Found {len(hrs)} home runs, current top EV: {top_hrs[0]['exit_velocity']:.1f} mph")
+
+                                    # Keep only top N
+                                    top_hrs = sorted(top_hrs, key=lambda x: x['exit_velocity'], reverse=True)[:limit]
+                                    logger.info(f"  Found {len(hrs)} home runs, current top EV: {top_hrs[0]['exit_velocity']:.1f} mph")
                         
                     except Exception as e:
                         logger.error(f"Error fetching {year}-{month:02d}: {str(e)}")
@@ -1697,17 +1816,12 @@ def create_server():
             
             response = json.dumps(result, indent=2)
             
-            # Cache the result
-            query_cache[cache_key] = {
-                'data': response,
-                'timestamp': datetime.now().isoformat()
-            }
-            
+            _cache_put(cache_key, response)
             return response
-            
+
         except Exception as e:
             logger.error(f"Error getting top home runs: {str(e)}")
-            return f"Error: {str(e)}"
+            return _error_response(str(e), "external_error")
     
     @mcp.tool()
     async def statcast_leaderboard(start_date: str, end_date: str, result: Optional[str] = None,
@@ -1739,37 +1853,25 @@ def create_server():
             JSON string of statcast leaderboard
         """
         try:
-            # Look up player ID if player_name is provided
+            start_date = validate_date(start_date, "start_date")
+            end_date = validate_date(end_date, "end_date")
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        try:
             player_id = None
             if player_name:
                 try:
-                    pb = load_pybaseball()
-                    from pybaseball import playerid_lookup
-    
-                    last_name = player_name.split()[-1]
-                    first_name = player_name.split()[0] if len(player_name.split()) > 1 else ''
-                    results = playerid_lookup(last_name, first_name)
-    
-                    if results.empty:
-                        return json.dumps({
-                            "error": f"No player found matching '{player_name}'",
-                            "suggestion": "Please check the player name spelling"
-                        })
-    
-                    # Use mlbam ID for statcast queries
-                    player_id = results.iloc[0]['key_mlbam']
-                    logger.info(f"Found player ID {player_id} for {player_name}")
-    
-                except Exception as e:
-                    logger.error(f"Error looking up player: {str(e)}")
-                    return json.dumps({"error": f"Error looking up player: {str(e)}"})
-    
-            # Check cache first
+                    player_name = sanitize_player_name(player_name)
+                    player_id = await asyncio.to_thread(lookup_player_id, player_name)
+                except (ValueError, LookupError) as e:
+                    return _error_response(str(e), "client_error")
+
             cache_key = get_cache_key(start_date, end_date, result=result, min_ev=min_ev,
                                      min_pitch_velo=min_pitch_velo, sort_by=sort_by,
                                      limit=limit, order=order, group_by=group_by,
                                      pitch_type=pitch_type, player_id=player_id)
-            
+
             if cache_key in query_cache and is_cache_valid(query_cache[cache_key]):
                 logger.info(f"Using cached data for query {cache_key}")
                 return query_cache[cache_key]['data']
@@ -1792,13 +1894,19 @@ def create_server():
             for i, (chunk_start, chunk_end) in enumerate(date_chunks, 1):
                 try:
                     logger.info(f"Fetching chunk {i}/{len(date_chunks)}: {chunk_start} to {chunk_end}")
-                    chunk_data = statcast(start_dt=chunk_start, end_dt=chunk_end)
+                    chunk_data = await _fetch_with_retry(
+                        statcast, start_dt=chunk_start, end_dt=chunk_end, max_retries=2,
+                    )
                     if not chunk_data.empty:
-                        # If we're looking for specific events, filter early to reduce memory usage
+                        # Apply all possible filters early to reduce memory usage
                         if result:
                             chunk_data = chunk_data[chunk_data['events'] == result]
                         if min_ev:
                             chunk_data = chunk_data[chunk_data['launch_speed'] >= min_ev]
+                        if min_pitch_velo:
+                            chunk_data = chunk_data[chunk_data['release_speed'] >= min_pitch_velo]
+                        if player_id:
+                            chunk_data = chunk_data[chunk_data['batter'] == player_id]
                         if not chunk_data.empty:
                             all_data.append(chunk_data)
                             logger.info(f"  Found {len(chunk_data)} matching events in this chunk")
@@ -1807,31 +1915,13 @@ def create_server():
                     continue
             
             if not all_data:
-                return f"No statcast data found for date range {start_date} to {end_date}"
+                return _error_response(f"No statcast data found for date range {start_date} to {end_date}", "client_error")
             
             # Combine all chunks
             data = pd.concat(all_data, ignore_index=True) if len(all_data) > 1 else all_data[0]
             
-            # Add batter names before filtering
-            data = add_batter_names_to_data(data)
-            
-            # Apply filters efficiently
-            if result:
-                data = data[data['events'] == result]
-                if data.empty:
-                    return f"No {result} events found in the specified date range"
-            
-            if min_ev:
-                data = data[data['launch_speed'] >= min_ev]
-            
-            if min_pitch_velo:
-                data = data[data['release_speed'] >= min_pitch_velo]
-                if data.empty:
-                    return f"No pitches found with velocity >= {min_pitch_velo} mph in the specified criteria"
-    
-            # Apply pitch type filter
+            # Apply pitch type filter (complex logic not suitable for chunk loop)
             if pitch_type:
-                import numpy as np
                 pitch_filter = None
                 if isinstance(pitch_type, str):
                     pitch_type_upper = pitch_type.upper()
@@ -1850,14 +1940,14 @@ def create_server():
                     data = data[data['pitch_type'] == pitch_type]
 
                 if data.empty:
-                    return f"No pitches matching pitch filter {pitch_type} found in the specified criteria"
-    
-            # Apply player filter
-            if player_id:
-                data = data[data['batter'] == player_id]
-                if data.empty:
-                    return f"No data found for {player_name} in the specified criteria"
+                    return _error_response(f"No pitches matching pitch filter {pitch_type} found in the specified criteria", "client_error")
+
+            if data.empty:
+                return _error_response("No data found matching the specified criteria", "client_error")
             
+            # Add batter names after all filtering to minimize lookups
+            data = add_batter_names_to_data(data)
+
             # Determine sort column
             sort_column_map = {
                 'exit_velocity': 'launch_speed',
@@ -1871,7 +1961,7 @@ def create_server():
                 'count': None,
             }
             sort_column = sort_column_map.get(sort_by, 'launch_speed')
-            
+
             # Vectorized team identification (much faster than apply)
             if 'inning_topbot' in data.columns and 'home_team' in data.columns and 'away_team' in data.columns:
                 data['batting_team'] = np.where(
@@ -1884,15 +1974,11 @@ def create_server():
             
             # Handle team grouping if requested
             if group_by == 'team':
-                # Group by team and calculate aggregates
-                import pandas as pd
-                import numpy as np
-                
                 # Remove rows with null values when applicable
                 if sort_column:
                     data = data.dropna(subset=[sort_column])
                     if data.empty:
-                        return f"No data available for sorting by {sort_by}"
+                        return _error_response(f"No data available for sorting by {sort_by}", "client_error")
                 
                 # Group by team and calculate statistics
                 team_stats = data.groupby('batting_team').agg({
@@ -1903,11 +1989,17 @@ def create_server():
                     'release_spin_rate': 'mean',
                     'estimated_ba_using_speedangle': 'mean',
                     'estimated_woba_using_speedangle': 'mean',
-                    'barrel': lambda x: (x == 1).sum() if 'barrel' in data.columns else 0
                 }).round(2)
-                
+
+                # Calculate barrel count separately to avoid lambda naming issues
+                if 'barrel' in data.columns:
+                    barrel_counts = data.groupby('batting_team')['barrel'].apply(lambda x: (x == 1).sum())
+                    team_stats['barrel_count'] = barrel_counts
+                else:
+                    team_stats['barrel_count'] = 0
+
                 # Flatten column names
-                team_stats.columns = ['_'.join(col).strip() for col in team_stats.columns.values]
+                team_stats.columns = ['_'.join(col).strip() if isinstance(col, tuple) else col for col in team_stats.columns.values]
                 
                 # Sort by the main metric
                 sort_col_for_team = 'event_count'
@@ -1954,7 +2046,7 @@ def create_server():
                         "avg_spin_rate": float(row.get('release_spin_rate_mean', 0)) if 'release_spin_rate_mean' in row else None,
                         "avg_xba": float(row.get('estimated_ba_using_speedangle_mean', 0)) if 'estimated_ba_using_speedangle_mean' in row else None,
                         "avg_xwoba": float(row.get('estimated_woba_using_speedangle_mean', 0)) if 'estimated_woba_using_speedangle_mean' in row else None,
-                        "barrel_count": int(row.get('barrel_<lambda>', 0)) if 'barrel_<lambda>' in row else 0,
+                        "barrel_count": int(row.get('barrel_count', 0)),
                         "top_play_video": top_play_video if top_play_video else None
                     }
                     leaderboard.append(entry)
@@ -1985,13 +2077,10 @@ def create_server():
 
             # Handle player grouping if requested
             if group_by == 'player':
-                import pandas as pd
-                import numpy as np
-
                 if sort_column:
                     data = data.dropna(subset=[sort_column])
                     if data.empty:
-                        return f"No data available for sorting by {sort_by}"
+                        return _error_response(f"No data available for sorting by {sort_by}", "client_error")
 
                 data['player_display'] = data['batter_name'].where(data['batter_name'].notna(), data['batter'].apply(lambda x: f"Player {x}"))
                 data['player_id'] = data['batter']
@@ -2096,18 +2185,14 @@ def create_server():
                     "leaderboard": leaderboard,
                 }, indent=2, default=str)
 
-                query_cache[cache_key] = {
-                    'data': response,
-                    'timestamp': datetime.now().isoformat()
-                }
-
+                _cache_put(cache_key, response)
                 return response
             
             # Remove rows with null values in sort column
             data = data.dropna(subset=[sort_column])
             
             if data.empty:
-                return f"No data available for sorting by {sort_by}"
+                return _error_response(f"No data available for sorting by {sort_by}", "client_error")
             
             # Sort by specified metric
             ascending = (order.lower() == 'asc')
@@ -2115,31 +2200,25 @@ def create_server():
             
             # Create leaderboard
             leaderboard = []
-            for idx, row in sorted_data.iterrows():
+            for rank, (idx, row) in enumerate(sorted_data.iterrows(), 1):
                 # Get game_pk for video links
                 game_pk = row.get('game_pk')
-                
+
                 # Generate video-related URLs
                 video_info = {}
                 if game_pk:
-                    # MLB.com game highlights page
                     video_info['game_highlights_url'] = f"https://www.mlb.com/gameday/{game_pk}/video"
-                    
-                    # MLB Film Room search URL for this player and date
-                    player_name = str(row.get('player_name', '')).replace(' ', '+')
+
+                    pitcher_name = str(row.get('player_name', '')).replace(' ', '+')
                     game_date = str(row.get('game_date', ''))
-                    if player_name and game_date:
-                        video_info['film_room_search'] = f"https://www.mlb.com/video/search?q={player_name}+{game_date}"
-                    
-                    # Include game_pk for API access
+                    if pitcher_name and game_date:
+                        video_info['film_room_search'] = f"https://www.mlb.com/video/search?q={pitcher_name}+{game_date}"
+
                     video_info['game_pk'] = str(game_pk)
-                    
-                    # MLB Stats API endpoint for game highlights
                     video_info['api_highlights_endpoint'] = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={game_pk}&hydrate=game(content(highlights(highlights)))"
-                
-                # Always generate comprehensive video links when game_pk is available
+
                 entry = {
-                    "rank": idx + 1,
+                    "rank": rank,
                     "player": str(row.get('batter_name', f"Player {row.get('batter', 'Unknown')}")),
                     "pitcher": str(row.get('player_name', 'Unknown')),  # player_name is the pitcher
                     "date": str(row.get('game_date', 'Unknown')),
@@ -2174,17 +2253,12 @@ def create_server():
                 "leaderboard": leaderboard
             }, indent=2, default=str)
             
-            # Cache the result
-            query_cache[cache_key] = {
-                'data': response,
-                'timestamp': datetime.now().isoformat()
-            }
-            
+            _cache_put(cache_key, response)
             return response
-            
+
         except Exception as e:
             logger.error(f"Error getting statcast leaderboard: {str(e)}")
-            return f"Error: {str(e)}"
+            return _error_response(str(e), "external_error")
     
     @mcp.tool()
     async def player_statcast(player_name: str, start_date: Optional[str] = None, end_date: Optional[str] = None,
@@ -2206,31 +2280,31 @@ def create_server():
             JSON with player stats, counts by pitch type, and top examples
         """
         try:
-            # Convert string inputs to proper types
+            player_name = sanitize_player_name(player_name)
+            if start_date:
+                start_date = validate_date(start_date, "start_date")
+            if end_date:
+                end_date = validate_date(end_date, "end_date")
+        except ValueError as e:
+            return _error_response(str(e), "client_error")
+
+        try:
             if min_exit_velocity is not None:
                 min_exit_velocity = float(min_exit_velocity)
             if min_distance is not None:
                 min_distance = float(min_distance)
-    
-            # Look up player ID
-            pb = load_pybaseball()
-            from pybaseball import playerid_lookup, statcast_batter
+        except (ValueError, TypeError) as e:
+            return _error_response(f"Invalid numeric filter: {e}", "client_error")
+
+        try:
+            player_id = await asyncio.to_thread(lookup_player_id, player_name)
+        except LookupError as e:
+            return _error_response(str(e), "client_error")
+
+        try:
+            from pybaseball import statcast_batter
             import pandas as pd
-    
-            last_name = player_name.split()[-1]
-            first_name = player_name.split()[0] if len(player_name.split()) > 1 else ''
-            results = playerid_lookup(last_name, first_name)
-    
-            if results.empty:
-                return json.dumps({
-                    "error": f"No player found matching '{player_name}'",
-                    "suggestion": "Please check the player name spelling"
-                })
-    
-            player_id = results.iloc[0]['key_mlbam']
-            logger.info(f"Found player ID {player_id} for {player_name}")
-    
-            # Set default date range if not provided
+
             if not start_date or not end_date:
                 current_year = datetime.now().year
                 start_date = start_date or f"{current_year}-04-01"
@@ -2238,8 +2312,7 @@ def create_server():
     
             logger.info(f"Fetching statcast data for {player_name} from {start_date} to {end_date}")
     
-            # Fetch player statcast data
-            data = statcast_batter(start_date, end_date, player_id)
+            data = await _fetch_with_retry(statcast_batter, start_date, end_date, player_id)
     
             if data.empty:
                 return json.dumps({
@@ -2340,7 +2413,7 @@ def create_server():
     
         except Exception as e:
             logger.error(f"Error in player_statcast: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return _error_response(str(e), "external_error")
     
     return mcp
 
