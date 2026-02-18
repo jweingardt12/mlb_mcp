@@ -3,9 +3,21 @@
 # Publishing Information
 name: mlb_mcp
 displayName: "MLB Baseball Stats API"
-description: "MCP server exposing MLB/Fangraphs data via pybaseballstats. Access player statistics, team data, and leaderboards."
+description: "MCP server exposing MLB/Fangraphs data via pybaseball. Access player statistics, team data, Statcast metrics, and leaderboards through 11 specialized tools."
 author: jweingardt12
-tags: ["sports", "baseball", "mlb", "statistics"]
+tags: ["sports", "baseball", "mlb", "statistics", "statcast"]
 
-# Runtime configuration - Python servers use automatic containerization
-runtime: "python"
+# Container runtime – required for Streamable HTTP hosted deployment
+# (Smithery discontinued STDIO for hosted servers in September 2025)
+runtime: "container"
+
+build:
+  dockerfile: "Dockerfile"
+  dockerBuildPath: "."
+
+startCommand:
+  type: "http"
+  configSchema:
+    type: "object"
+    properties: {}
+    required: []

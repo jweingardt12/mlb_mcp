@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and platform_python_implementation != 'PyPy'",
@@ -1038,7 +1038,7 @@ wheels = [
 
 [[package]]
 name = "mlb-mcp"
-version = "0.1.0"
+version = "2.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -1050,12 +1050,14 @@ dependencies = [
     { name = "pybaseball" },
     { name = "requests" },
     { name = "smithery" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.10.0" },
-    { name = "fastmcp", specifier = ">=1.0.0" },
+    { name = "fastmcp", specifier = ">=2.0.0,<3" },
     { name = "lxml", specifier = ">=4.6.0" },
     { name = "mcp", specifier = ">=1.15.0" },
     { name = "numpy", specifier = ">=1.24.0" },
@@ -1063,6 +1065,8 @@ requires-dist = [
     { name = "pybaseball", specifier = ">=2.0.0" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "smithery", specifier = ">=0.4.2" },
+    { name = "starlette", specifier = ">=0.37.0" },
+    { name = "uvicorn", specifier = ">=0.30.0" },
 ]
 
 [[package]]

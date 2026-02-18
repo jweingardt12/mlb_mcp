@@ -5,6 +5,7 @@ from fastmcp import FastMCP
 from typing import Optional, Dict, Any, List, Tuple
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -16,7 +17,10 @@ from collections import OrderedDict
 from smithery.decorators import smithery
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 # Lazy loading for pybaseball
@@ -2417,11 +2421,55 @@ def create_server():
     
     return mcp
 
+
 def main():
-    """Main entry point for the MCP server"""
-    logger.info("Starting MLB Stats MCP server")
+    """Main entry point for the MCP server.
+
+    Supports two transports controlled by the ``TRANSPORT`` env-var:
+
+    * ``stdio``  (default) – for local development and Claude Desktop
+    * ``http``   – Streamable HTTP for Smithery hosted deployment
+
+    When running as HTTP, the server binds to ``HOST``/``PORT`` env-vars
+    (Smithery sets ``PORT=8081``).
+    """
+    transport = os.environ.get("TRANSPORT", "stdio").lower()
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8081"))
+
+    logger.info("Starting MLB Stats MCP server (transport=%s)", transport)
     server = create_server()
-    server.run()
+
+    if transport == "http":
+        # Streamable HTTP – required for Smithery hosted deployment
+        from starlette.middleware.cors import CORSMiddleware
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+        import uvicorn
+
+        app = server.http_app(path="/mcp")
+
+        # CORS – allow Smithery and web clients to reach the server
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=["*"],
+        )
+
+        # Health-check endpoint used by Docker HEALTHCHECK and Smithery
+        async def _health(request: Request) -> JSONResponse:
+            return JSONResponse({"status": "healthy", "server": "mlb-stats-mcp"})
+
+        app.routes.insert(0, Route("/health", _health, methods=["GET"]))
+
+        logger.info("Serving Streamable HTTP on %s:%s/mcp", host, port)
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    else:
+        # Default: stdio for local / Claude Desktop usage
+        server.run()
+
 
 if __name__ == "__main__":
     main()
