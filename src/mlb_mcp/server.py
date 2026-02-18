@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MLB Stats MCP Server using fastmcp for Smithery deployment"""
 
+import os
 from fastmcp import FastMCP
 from typing import Optional, Dict, Any, List, Tuple
 import asyncio
@@ -2418,10 +2419,40 @@ def create_server():
     return mcp
 
 def main():
-    """Main entry point for the MCP server"""
+    """Main entry point for the MCP server.
+    
+    Transport mode is determined by environment variables:
+    - If PORT is set (e.g., Railway), defaults to HTTP transport on 0.0.0.0:$PORT
+    - Otherwise defaults to stdio transport for local/CLI usage
+    
+    Environment variables:
+    - MCP_TRANSPORT: Override transport ('stdio', 'http', or 'sse')
+    - MCP_HOST: Override host (default: '0.0.0.0' for HTTP)
+    - MCP_PORT: Override port (default: $PORT or 8000)
+    - MCP_PATH: Override MCP endpoint path (default: '/mcp')
+    """
     logger.info("Starting MLB Stats MCP server")
     server = create_server()
-    server.run()
+    
+    port_env = os.environ.get("PORT")
+    transport = os.environ.get("MCP_TRANSPORT")
+    
+    if transport:
+        transport = transport.lower()
+    elif port_env:
+        transport = "http"
+    else:
+        transport = "stdio"
+    
+    if transport in ("http", "sse"):
+        host = os.environ.get("MCP_HOST", "0.0.0.0")
+        port = int(os.environ.get("MCP_PORT") or port_env or "8000")
+        path = os.environ.get("MCP_PATH", "/mcp")
+        logger.info(f"Running MCP server with {transport} transport on {host}:{port}{path}")
+        server.run(transport=transport, host=host, port=port, path=path)
+    else:
+        logger.info("Running MCP server with stdio transport")
+        server.run()
 
 if __name__ == "__main__":
     main()

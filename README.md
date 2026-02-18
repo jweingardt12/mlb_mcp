@@ -183,7 +183,25 @@ New team aggregation feature for `statcast_leaderboard`:
 
 ## Installation
 
-### Deploy on Smithery
+### Deploy on Railway (Recommended for Smithery)
+
+Deploy to Railway for a hosted HTTP MCP endpoint that Smithery can connect to:
+
+1. Create a new Railway project and connect your GitHub repository
+2. Railway will auto-detect the `Procfile` and deploy
+3. Your MCP endpoint will be available at `https://<your-railway-domain>/mcp`
+4. Connect this URL to [Smithery](https://smithery.ai) for distribution
+
+**Environment Variables (optional):**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | (Railway sets) | HTTP port - automatically switches to HTTP transport |
+| `MCP_TRANSPORT` | `stdio` / `http` | Override transport mode (`stdio`, `http`, `sse`) |
+| `MCP_HOST` | `0.0.0.0` | Host to bind for HTTP transport |
+| `MCP_PORT` | `$PORT` or `8000` | Port for HTTP transport |
+| `MCP_PATH` | `/mcp` | MCP endpoint path |
+
+### Deploy on Smithery Direct
 
 1. Fork this repository
 2. Connect your GitHub account to [Smithery](https://smithery.ai)
@@ -194,26 +212,29 @@ New team aggregation feature for `statcast_leaderboard`:
 ```bash
 # Clone the repository
 git clone https://github.com/yourusername/mlb_mcp.git
-cd mlb_mcp/san-juan
+cd mlb_mcp
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies with uv
+uv sync
 
-# Run the server
-python -m server
+# Run the server (stdio mode for local testing)
+uv run python -m mlb_mcp.server
+
+# Or run with HTTP transport for local HTTP testing
+MCP_TRANSPORT=http MCP_PORT=8000 uv run python -m mlb_mcp.server
 ```
 
 ### Claude Desktop Configuration
 
-Add to your Claude Desktop configuration:
+Add to your Claude Desktop configuration (uses stdio transport):
 
 ```json
 {
   "mcpServers": {
     "mlb-stats": {
-      "command": "python",
-      "args": ["-m", "server"],
-      "cwd": "/path/to/mlb_mcp/san-juan"
+      "command": "uv",
+      "args": ["run", "python", "-m", "mlb_mcp.server"],
+      "cwd": "/path/to/mlb_mcp"
     }
   }
 }
@@ -378,11 +399,11 @@ Tool: statcast_count("2022-01-01", "2025-12-31", "hit", None, 100)
 ## Technical Details
 
 ### Architecture
-- **Transport**: stdio (Model Context Protocol)
+- **Transport**: stdio (local) or HTTP (Railway/hosted) - auto-detected via `PORT` env var
 - **Framework**: FastMCP for protocol implementation
 - **Data Source**: pybaseball library (MLB official data)
 - **Language**: Python 3.11+
-- **Deployment**: Docker container via Smithery
+- **Deployment**: Railway (HTTP) or Smithery (containerized)
 
 ### Performance Optimizations
 - **Query Chunking**: Automatically splits large date ranges into 5-day chunks to handle Baseball Savant's 30,000 row limit
@@ -406,12 +427,15 @@ Tool: statcast_count("2022-01-01", "2025-12-31", "hit", None, 100)
 
 ### File Structure
 ```
-san-juan/
-├── server.py          # Main MCP server implementation
-├── requirements.txt   # Python dependencies
-├── smithery.yaml      # Smithery deployment configuration
-├── Dockerfile         # Container configuration
-└── README.md          # This file
+mlb_mcp/
+├── src/
+│   └── mlb_mcp/
+│       ├── __init__.py    # Package exports
+│       └── server.py      # Main MCP server implementation
+├── pyproject.toml         # Project configuration and dependencies
+├── smithery.yaml          # Smithery deployment configuration
+├── Procfile               # Railway start command
+└── README.md              # This file
 ```
 
 ## Requirements
